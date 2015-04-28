@@ -13,7 +13,7 @@ Example
 
 Clone the repo
 <pre>
-git clone --recursive git@github.com:caruizdiaz/rtpengine-redis-plugin.git -b approach2
+git clone git@github.com:ngvoice/rtpengine-redis-plugin.git
 </pre>
 
 Dependencies
