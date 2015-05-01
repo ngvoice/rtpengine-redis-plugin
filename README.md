@@ -1,3 +1,8 @@
+IMPORTANT NOTE:
+======================
+
+This plugin works for RTPEngine 3.3.x only, not for later versions.
+
 Installation Guide
 ======================
 
