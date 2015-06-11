@@ -8,7 +8,7 @@
 #include "re_redis_mod.h"
 #include "redis_storage.h"
 
-char *__module_version = "redis/4";
+char *__module_version = "redis/8";
 
 #define DECL_STRUCT_SIZE(_s_) unsigned long __size_struct_ ## _s_ = sizeof(struct _s_);
 
@@ -154,7 +154,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 //			SP_SET((&sp), IMPLICIT_RTCP);
 
 			call_str_cpy(call, &sp.type, &m->type);
-			memcpy(flags.directions, sp.direction, sizeof(sp.direction));
+			memcpy(flags.direction, sp.direction, sizeof(sp.direction));
 			flags.transport_protocol = m->protocol;
 
 			SP_SET((&sp), NO_RTCP);
@@ -430,12 +430,12 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		ZERO(sp2.fingerprint);
 #endif
 
-		mutex_lock(&cm->portlock);
+		mutex_lock(&cm->hashlock);
 		if (bridge_port1 > bridge_port2 && bridge_port2 > 0)
 			cm->lastport = bridge_port2 - 1;
 		else
 			cm->lastport = bridge_port1 - 1;
-		mutex_unlock(&cm->portlock);
+		mutex_unlock(&cm->hashlock);
 
 		if (bit_array_isset(cm->ports_used, cm->lastport)) {
 			syslog(LOG_ERR, "Port #%d has already been used", cm->lastport);

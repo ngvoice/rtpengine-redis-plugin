@@ -22,7 +22,7 @@ rtpengine:
 	cd ../rtpengine/daemon && $(MAKE)
 
 $(BINSO): $(OBJECTS) 
-	$(CC) $(LDFLAGS) $(OBJECTS) -o $@
+	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
 
 .cpp.o:
 	$(CC) $(CFLAGS) $< -o $@

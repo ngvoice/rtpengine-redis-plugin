@@ -1,6 +1,0 @@
-.depend
-*.o
-rtpengine
-core
-core.*
-.ycm_extra_conf.pyc
