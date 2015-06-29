@@ -181,11 +181,11 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 
 			__insert_stream_params(redis, &call->callid, sp_counter++, &sp, ps->sfd->fd.localport);
 
-//			char buf[64];
-//			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
-//			syslog(LOG_INFO, "%s:%d", buf, sp.rtp_endpoint.port);
-//			smart_ntop_p(buf, &sp.rtcp_endpoint.ip46, sizeof(buf));
-//			syslog(LOG_INFO, "rtcp: %s:%d", buf, sp.rtcp_endpoint.port);
+			char buf[64];
+			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
+			syslog(LOG_INFO, "%s:%d", buf, sp.rtp_endpoint.port);
+			smart_ntop_p(buf, &sp.rtcp_endpoint.ip46, sizeof(buf));
+			syslog(LOG_INFO, "rtcp: %s:%d", buf, sp.rtcp_endpoint.port);
 		}
 	}
 
@@ -422,6 +422,8 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		// FIXME make stream id dynamic
 		if (__retrieve_stream_params(redis, callid, 1, &sp2, &bridge_port2) < 0)
 			goto next;
+
+		syslog(LOG_INFO, "Retrieve bridge port 1 [%u] and 2 [%u]", bridge_port1, bridge_port2);
 
 #ifdef obsolete_dtls
 		syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, bridge_port1);
@@ -704,7 +706,17 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
+	syslog(LOG_INFO,"Retrieved Bridge Port ascii:%s",aux);
+
+	if (aux.len != 2) {
+		syslog(LOG_ERROR,"bridge port retrieved but length is (not 2):%u", aux.len);
+		goto  error;
+	}
+
 	COPY_AND_FREE(bridge_port, aux);
+
+	syslog(LOG_INFO,"Retrieved Bridge Port:%u",*bridge_port);
+
 
 	snprintf(key, sizeof(key), "%d:index", stream_id);
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
@@ -854,6 +866,8 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
 	snprintf(key, sizeof(key), "%d:flags", stream_id);
 	if (redis_insert_bin_value_async(redis, callid, key, &sp->sp_flags, sizeof(sp->sp_flags)) < 0)
 		goto error;
+
+	syslog(LOG_INFO,"Bridge Port:%u",bridge_port);
 
 	snprintf(key, sizeof(key), "%d:bridge_port", stream_id);
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(bridge_port)) < 0)
