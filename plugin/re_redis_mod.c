@@ -123,7 +123,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 				SP_SET((&sp), RTCP_MUX);
 
 			sp.crypto = m->sdes_in.params;
-			crypto_params_copy(&sp.crypto, &m->sdes_in.params);
+			crypto_params_copy(&sp.crypto, &m->sdes_in.params, (flags.opmode == OP_OFFER) ? 1 : 0);
 			sp.sdes_tag = m->sdes_in.tag;
 
 			if (MEDIA_ISSET(m, ASYMMETRIC)) {
@@ -507,7 +507,7 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		goto error;
 	}
 
-	if (!(monologue = call_get_mono_dialogue(call, ft, tt))) {
+	if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
 		syslog(LOG_ERR, "error allocating monologue\n");
 		goto error;
 	}
