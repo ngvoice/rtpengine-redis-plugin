@@ -1,7 +1,7 @@
 IMPORTANT NOTE:
 ======================
 
-This plugin works for RTPEngine 3.3.x only, not for later versions.
+This plugin works for RTPEngine 4.1.x, not for earlier versions.
 
 Installation Guide
 ======================
@@ -18,7 +18,7 @@ Example
 
 Clone the repo
 <pre>
-git clone git@github.com:ngvoice/rtpengine-redis-plugin.git
+git clone --recursive https://github.com/ngvoice/rtpengine-redis-plugin -b 1and1-fmetz
 </pre>
 
 Dependencies
