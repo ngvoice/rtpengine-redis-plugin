@@ -1,7 +1,7 @@
 IMPORTANT NOTE:
 ======================
 
-This plugin works for RTPEngine 4.1.x, not for earlier versions.
+**This plugin works for RTPEngine 4.1.x, not for earlier versions - Work in progress**
 
 Installation Guide
 ======================
@@ -18,7 +18,9 @@ Example
 
 Clone the repo
 <pre>
-git clone --recursive https://github.com/ngvoice/rtpengine-redis-plugin -b 1and1-fmetz
+git clone https://github.com/ngvoice/rtpengine-redis-plugin rtpengine-redis-plugin
+cd rtpengine-redis-plugin
+git clone https://github.com/1and1/rtpengine -b redis-dev
 </pre>
 
 Dependencies
