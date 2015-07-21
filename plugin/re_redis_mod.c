@@ -8,7 +8,7 @@
 #include "re_redis_mod.h"
 #include "redis_storage.h"
 
-char *__module_version = "redis/8";
+char *__module_version = "redis/9";
 
 #define DECL_STRUCT_SIZE(_s_) unsigned long __size_struct_ ## _s_ = sizeof(struct _s_);
 
@@ -76,7 +76,8 @@ static void __streams_free(GQueue *q);
 static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
-static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode);
+static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
+	unsigned int wanted_start_port1, unsigned int wanted_start_port2);
 static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp);
 
 void mod_redis_update(struct call *call, struct redis *redis) {
@@ -123,7 +124,9 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 				SP_SET((&sp), RTCP_MUX);
 
 			sp.crypto = m->sdes_in.params;
+			syslog(LOG_ERR, "HIHO\n");
 			crypto_params_copy(&sp.crypto, &m->sdes_in.params, (flags.opmode == OP_OFFER) ? 1 : 0);
+			syslog(LOG_ERR, "HUHU\n");
 			sp.sdes_tag = m->sdes_in.tag;
 
 			if (MEDIA_ISSET(m, ASYMMETRIC)) {
@@ -362,7 +365,7 @@ static int __restore_dtls_params(struct redis *redis, struct dtls_cert *cert) {
 
 	if (!X509_gmtime_adj(X509_get_notBefore(cert->x509), -60*60*24))
 		goto err;
-
+mod_redis_restore
 	if (!X509_gmtime_adj(X509_get_notAfter(cert->x509), (60*60*24*30)))
 		goto err;
 
@@ -423,6 +426,9 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		if (__retrieve_stream_params(redis, callid, 1, &sp2, &bridge_port2) < 0)
 			goto next;
 
+		/* take care that for now, the bridgeports inserted in redis is
+		 * rtp_port + 1 = rtcp port, so we have to decrement it for rtp stuff
+		 */
 		syslog(LOG_INFO, "Retrieve bridge port 1 [%u] and 2 [%u]", bridge_port1, bridge_port2);
 
 #ifdef obsolete_dtls
@@ -437,6 +443,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 			cm->lastport = bridge_port2 - 1;
 		else
 			cm->lastport = bridge_port1 - 1;
+
 		mutex_unlock(&cm->hashlock);
 
 		if (bit_array_isset(cm->ports_used, cm->lastport)) {
@@ -447,8 +454,6 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		sp1.index = 1;
 		sp2.index = 1;
 
-		__fill_flag(&flags, &sp1);
-
 		// get call tags
 		if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
 			goto next;
@@ -456,18 +461,29 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
 			goto next;
 
+
+		memset(&flags, 0, sizeof(flags));
+		__fill_flag(&flags, &sp1);
+
+		/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
+		 * the monologues are switched so we need either to switch the bridgeports
+		 * or the stream params
+		 */
 		flags.opmode = OP_OFFER;
-		if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER) < 0) {
+		if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, bridge_port2 - 1, bridge_port1 - 1) < 0) {
 			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
 
-		memset(&flags, 0, sizeof(flags));
 
+		memset(&flags, 0, sizeof(flags));
 		__fill_flag(&flags, &sp2);
 
+		/* the bridge_ports are allocated in the offer stage so we can ignore
+		 * the ones passed in the answer stage
+		 */
 		flags.opmode = OP_ANSWER;
-		if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER) < 0) {
+		if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER, 0, 0) < 0) {
 			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
@@ -496,7 +512,8 @@ static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp) {
 }
 
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp,
-		str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode) {
+		str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
+		unsigned int wanted_start_port1, unsigned int wanted_start_port2) {
 
 	struct call *call = NULL;
 	GQueue streams = G_QUEUE_INIT;
@@ -507,14 +524,30 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		goto error;
 	}
 
+	/* fix the call_get_mono_dialogue() for 4.1 (this is not needed for 4.0 or 3.3.0)
+	 * ..see also call_offer_answer_ng() in rtpengine's call_interfaces.c
+	 **/
+	if (op_mode == OP_ANSWER) {
+		str_swap(tt, ft);
+	}
+
 	if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
 		syslog(LOG_ERR, "error allocating monologue\n");
 		goto error;
 	}
 
+	/* fix the tag-type displayed at rtpengine-cli
+	 * see also call_offer_answer_ng() in rtpengine's call_interfaces.c
+	 **/
+	if (op_mode == OP_OFFER) {
+		monologue->tagtype = FROM_TAG;
+	} else {
+		monologue->tagtype = TO_TAG;
+	}
+
 	g_queue_push_tail(&streams, sp);
 
-	if (monologue_offer_answer(monologue, &streams, flags) < 0) {
+	if (monologue_offer_answer(monologue, &streams, flags, wanted_start_port1, wanted_start_port2) < 0) {
 		syslog(LOG_ERR, "error processing monologue\n");
 		goto error;
 	}
