@@ -18,7 +18,7 @@ Example
 
 Clone the repo
 <pre>
-git clone https://github.com/ngvoice/rtpengine-redis-plugin rtpengine-redis-plugin
+git clone https://github.com/ngvoice/rtpengine-redis-plugin rtpengine-redis-plugin -b 1and1-fmetz
 cd rtpengine-redis-plugin
 git clone https://github.com/1and1/rtpengine -b redis-dev
 </pre>
