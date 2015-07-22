@@ -70,8 +70,10 @@ extern const int num_crypto_suites;
 
 static void __print_flags(const char *title, struct stream_params *sp);
 
-static int __insert_stream_params(struct redis *redis, str* callid, int stream_id, struct stream_params *sp, uint16_t bridge_port);
-static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id, struct stream_params *sp, uint16_t *bridge_port);
+static int __insert_stream_params(struct redis *redis, str* callid, int stream_id,
+	struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port); 
+static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id,
+	struct stream_params *sp, unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port); 
 static void __streams_free(GQueue *q);
 static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
@@ -91,6 +93,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 	struct sdp_ng_flags flags;
 	struct stream_params sp;
 	int set = 0;
+	unsigned int rtp_bridge_port = 0, rtcp_bridge_port = 0;
         struct rtp_payload_type *pt;
         GList *values, *iter;
 
@@ -175,11 +178,14 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 				ps = ps_iter->data;
 
 				if (PS_ISSET(ps, RTCP)) {
+					rtcp_bridge_port = ps->sfd->fd.localport;
 					sp.rtcp_endpoint = ps->endpoint;
 					SP_CLEAR((&sp), NO_RTCP);
 				}
-				else
+				else {
+					rtp_bridge_port = ps->sfd->fd.localport;
 					sp.rtp_endpoint = ps->endpoint;
+				}
 
 				if (PS_ISSET(ps, IMPLICIT_RTCP))
 					SP_SET((&sp), IMPLICIT_RTCP);
@@ -191,7 +197,8 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 					SP_SET((&sp), MEDIA_HANDOVER);
 			}
 
-			__insert_stream_params(redis, &call->callid, sp_counter++, &sp, ps->sfd->fd.localport);
+			__insert_stream_params(redis, &call->callid, sp_counter++, &sp, rtp_bridge_port, rtcp_bridge_port);
+			syslog(LOG_ERR, "UPDATE %u %u", rtp_bridge_port, rtcp_bridge_port);
 
 			char buf[64];
 			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
@@ -404,8 +411,8 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	struct stream_params sp1;
 	struct stream_params sp2;
 	struct sdp_ng_flags flags;
-	uint16_t bridge_port1 = 0;
-	uint16_t bridge_port2 = 0;
+	unsigned int rtp_bridge_port1 = 0, rtcp_bridge_port1 = 0;
+	unsigned int rtp_bridge_port2 = 0, rtcp_bridge_port2 = 0;
 
 	syslog(LOG_INFO, __FUNCTION__);
 
@@ -428,30 +435,28 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		syslog(LOG_INFO, "Retrieve CID [%.*s]", callid->len, callid->s);
 
 		// FIXME make stream id dynamic
-		if (__retrieve_stream_params(redis, callid, 0, &sp1, &bridge_port1) < 0)
+		if (__retrieve_stream_params(redis, callid, 0, &sp1, &rtp_bridge_port1, &rtcp_bridge_port1) < 0)
 			goto next;
 
 		// FIXME make stream id dynamic
-		if (__retrieve_stream_params(redis, callid, 1, &sp2, &bridge_port2) < 0)
+		if (__retrieve_stream_params(redis, callid, 1, &sp2, &rtp_bridge_port2, &rtcp_bridge_port2) < 0)
 			goto next;
 
-		/* take care that for now, the bridgeports inserted in redis is
-		 * rtp_port + 1 = rtcp port, so we have to decrement it for rtp stuff
-		 */
-		syslog(LOG_INFO, "Retrieve bridge port 1 [%u] and 2 [%u]", bridge_port1, bridge_port2);
+		syslog(LOG_ERR, "Retrieve rtp bridge ports 1 [%u] and 2 [%u]", rtp_bridge_port1, rtp_bridge_port2);
+		syslog(LOG_ERR, "Retrieve rtcp bridge ports 1 [%u] and 2 [%u]", rtcp_bridge_port1, rtcp_bridge_port2);
 
 #ifdef obsolete_dtls
-		syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, bridge_port1);
-		syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  bridge_port2);
+		syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, rtp_bridge_port1);
+		syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  rtp_bridge_port2);
 		ZERO(sp1.fingerprint);
 		ZERO(sp2.fingerprint);
 #endif
 
 		mutex_lock(&cm->hashlock);
-		if (bridge_port1 > bridge_port2 && bridge_port2 > 0)
-			cm->lastport = bridge_port2 - 1;
+		if (rtp_bridge_port1 > rtp_bridge_port2 && rtp_bridge_port2 > 0)
+			cm->lastport = rtp_bridge_port2;
 		else
-			cm->lastport = bridge_port1 - 1;
+			cm->lastport = rtp_bridge_port1;
 
 		mutex_unlock(&cm->hashlock);
 
@@ -479,7 +484,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		 * or the stream params
 		 */
 		flags.opmode = OP_OFFER;
-		if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, bridge_port2 - 1, bridge_port1 - 1) < 0) {
+		if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, rtp_bridge_port2, rtp_bridge_port1) < 0) {
 			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
@@ -488,7 +493,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		memset(&flags, 0, sizeof(flags));
 		__fill_flag(&flags, &sp2);
 
-		/* the bridge_ports are allocated in the offer stage so we can ignore
+		/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
 		 * the ones passed in the answer stage
 		 */
 		flags.opmode = OP_ANSWER;
@@ -725,7 +730,8 @@ static void __print_flags(const char *title, struct stream_params *sp) {
 
 }
 
-static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id, struct stream_params *sp, uint16_t *bridge_port) {
+static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id,
+		struct stream_params *sp, unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port) {
 	int aux_int = 0;
 	int payload_type_count = 0;
 	char key[128], val[128];
@@ -734,8 +740,6 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
         struct rtp_payload_type *pt;
 
 	//const char *crypto_name = NULL;
-        syslog(LOG_ERR, "__retrieve_stream_params - CALL", payload_index);
-
 	memset(val, 0, sizeof(val));
 	memset(sp, 0, sizeof(*sp));
 
@@ -767,22 +771,17 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	//PS_CLEAR(sp, HAS_HANDLER);
 	//PS_CLEAR(sp, KERNELIZED);
 
-	// get the bridge port for the stream param
-	snprintf(key, sizeof(key), "%d:bridge_port", stream_id);
-	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
+	// get the rtp bridge port for the stream param
+	snprintf(key, sizeof(key), "%d:rtp_bridge_port", stream_id);
+	if (redis_get_int(redis, "HGET", callid, key, (unsigned int*)rtp_bridge_port) < 0)
 		goto error;
 
-	syslog(LOG_INFO,"Retrieved Bridge Port ascii:%s",aux);
+	// get the rtcp bridge port for the stream param
+	snprintf(key, sizeof(key), "%d:rtcp_bridge_port", stream_id);
+	if (redis_get_int(redis, "HGET", callid, key, (unsigned int*)rtcp_bridge_port) < 0)
+		goto error;
 
-	if (aux.len != 2) {
-		syslog(LOG_ERROR,"bridge port retrieved but length is (not 2):%u", aux.len);
-		goto  error;
-	}
-
-	COPY_AND_FREE(bridge_port, aux);
-
-	syslog(LOG_INFO,"Retrieved Bridge Port:%u",*bridge_port);
-
+	syslog(LOG_ERR,"Retrieved rtp_bridge_port=%u rtcp_bridge_port=%u",*rtp_bridge_port, *rtcp_bridge_port);
 
 	snprintf(key, sizeof(key), "%d:index", stream_id);
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
@@ -925,13 +924,14 @@ error:
 
 }
 
-static int __insert_stream_params(struct redis *redis, str* callid, int stream_id, struct stream_params *sp, uint16_t bridge_port) {
+static int __insert_stream_params(struct redis *redis, str* callid, int stream_id,
+		struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port) { 
 	char key[128];
 	const char *crypto_name = __crypto_find_name(sp->crypto.crypto_suite);
         struct rtp_payload_type *pt;
-        int payload_type_count = 0;
+	unsigned int payload_type_count = 0;
 
-	syslog(LOG_INFO,"__insert_stream_params - Bridge Port:%u", bridge_port);
+	syslog(LOG_INFO,"__insert_stream_params - rtp_bridge_port = %u, rtcp_bridge_port = %u", rtp_bridge_port, rtcp_bridge_port);
 
         while ((pt = g_queue_pop_head(&sp->rtp_payload_types))) {
                 snprintf(key, sizeof(key), "%d:PayloadType%d", stream_id, payload_type_count);
@@ -941,7 +941,7 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
                 payload_type_count++;
         }
 
-	snprintf(key, sizeof(key), "%d:PayloadTypeCount", stream_id, payload_type_count);
+	snprintf(key, sizeof(key), "%d:PayloadTypeCount", stream_id);
 	if (redis_insert_uint_value_async(redis, callid, key, payload_type_count) < 0)
 		goto error;
 
@@ -949,8 +949,12 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
 	if (redis_insert_bin_value_async(redis, callid, key, &sp->sp_flags, sizeof(sp->sp_flags)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:bridge_port", stream_id);
-	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(bridge_port)) < 0)
+	snprintf(key, sizeof(key), "%d:rtp_bridge_port", stream_id);
+	if (redis_insert_uint_value_async(redis, callid, key, (uint32_t)rtp_bridge_port) < 0)
+		goto error;
+
+	snprintf(key, sizeof(key), "%d:rtcp_bridge_port", stream_id);
+	if (redis_insert_uint_value_async(redis, callid, key, (uint32_t)rtcp_bridge_port) < 0)
 		goto error;
 
 	snprintf(key, sizeof(key), "%d:index", stream_id);
