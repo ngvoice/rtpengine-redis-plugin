@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
+#include <openssl/err.h>
 
 #include "redis_storage.h"
 
@@ -22,7 +23,7 @@ static int __redis_insert_int_value(struct redis *redis, str *callid, const char
 static int __redis_insert_uint_value(struct redis *redis, str *callid, const char* key, uint32_t value, int async);
 static int __redis_insert_bin_value(struct redis *redis, str *callid, const char* key, const void *value, size_t size, int async);
 static int __redis_insert_str_value(struct redis *redis, str *callid, const char* key, str *value, int async);
-static void *__event_dispatcher(void *p);
+//static void *__event_dispatcher(void *p);
 
 #define GOTO_LABEL_IF_ERR(_rpl_, _lbl_) if (!(_rpl_) || (_rpl_)->type == REDIS_REPLY_ERROR) \
 											goto _lbl_; else \
@@ -217,12 +218,14 @@ static struct redis *__redis_connect_async(struct redis *redis) {
 	return redis;
 }
 
+/*
 static void *__event_dispatcher(void *p) {
 	struct redis *redis = p;
 	syslog(LOG_ERR, "THREAD STARTED: %s\n", redis->str_ip);
 	event_base_dispatch(redis->eb);
 	return NULL;
 }
+*/
 
 struct redis *redis_connect_all(struct redis *redis) {
 	//return __redis_connect_sync(__redis_connect_async(redis));
@@ -395,6 +398,28 @@ done:
 */
 
 int redis_get_int(struct redis *redis, const char *instruction, str *callid, const char *key, int *value) {
+	redisReply *rpl = NULL;
+	char cmd_buffer[1024];
+	snprintf(cmd_buffer, sizeof(cmd_buffer), "%s mp:%.*s %s", instruction, callid->len, callid->s, key);
+
+	if (redis_exec(redis, cmd_buffer, &rpl) < 0)
+		return -1;
+
+	if (rpl->type == REDIS_REPLY_INTEGER)
+		*value = rpl->integer;
+	else if (rpl->type == REDIS_REPLY_NIL)
+		*value = 0;
+	else {
+		*value = atoi(rpl->str);
+	}
+
+	freeReplyObject(rpl);
+
+	//syslog(LOG_INFO, "Got INT value: %s=%d", key, *value);
+	return 1;
+}
+
+int redis_get_uint(struct redis *redis, const char *instruction, str *callid, const char *key, unsigned int *value) {
 	redisReply *rpl = NULL;
 	char cmd_buffer[1024];
 	snprintf(cmd_buffer, sizeof(cmd_buffer), "%s mp:%.*s %s", instruction, callid->len, callid->s, key);

@@ -47,6 +47,7 @@ int redis_insert_bin_value_async(struct redis *redis, str *callid, const char* k
 int redis_exec(struct redis *redis, const char *cmd, redisReply **rpl);
 int redis_exec_async(struct redis *redis, const char *cmd);
 int redis_get_int(struct redis *redis, const char *instruction, str *callid, const char *key, int *value);
+int redis_get_uint(struct redis *redis, const char *instruction, str *callid, const char *key, unsigned int *value);
 int redis_get_str(struct redis *redis, const char *instruction, str *callid, const char *key, str *value);
 //
 int redis_remove_mp_entry(struct redis *redis, str *callid);
