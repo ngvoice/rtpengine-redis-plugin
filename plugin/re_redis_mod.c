@@ -212,6 +212,12 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 		return;
 	}
 
+	// keep call tos in order to fill flags.tos when redis restore
+	if (redis_insert_uint_value_async(redis, &call->callid, "call-tos", call->tos) < 0) {
+		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
+		return;
+	}
+
 	// process async events
 	event_base_loop(redis->eb, EVLOOP_NONBLOCK | EVLOOP_ONCE);
 }
@@ -412,6 +418,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	struct sdp_ng_flags flags;
 	unsigned int rtp_bridge_port1 = 0, rtcp_bridge_port1 = 0;
 	unsigned int rtp_bridge_port2 = 0, rtcp_bridge_port2 = 0;
+	unsigned int tos = 0;
 
 	syslog(LOG_INFO, __FUNCTION__);
 
@@ -474,9 +481,13 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
 			goto next;
 
+		// get call tos
+		if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
+			goto next;
 
 		memset(&flags, 0, sizeof(flags));
 		__fill_flag(&flags, &sp1);
+		flags.tos = tos;
 
 		/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
 		 * the monologues are switched so we need either to switch the bridgeports
@@ -491,6 +502,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 
 		memset(&flags, 0, sizeof(flags));
 		__fill_flag(&flags, &sp2);
+		flags.tos = tos;
 
 		/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
 		 * the ones passed in the answer stage
