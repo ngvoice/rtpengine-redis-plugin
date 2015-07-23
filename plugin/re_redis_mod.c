@@ -212,6 +212,11 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 		return;
 	}
 
+	if (redis_insert_int_value_async(redis, &call->callid, "streams_count", sp_counter) < 0) {
+		syslog(LOG_ERR, "couldn't insert streams count into database\n");
+		return;
+	}
+
 	// keep call tos in order to fill flags.tos when redis restore
 	if (redis_insert_uint_value_async(redis, &call->callid, "call-tos", call->tos) < 0) {
 		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
@@ -411,7 +416,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	str ft = {0,0};
 	str tt = {0,0};
 	str *callid = NULL;
-	int length = 0;
+	int length = 0, streams_count = 0, stream_pair = 0;
 	int i;
 	struct stream_params sp1;
 	struct stream_params sp2;
@@ -437,80 +442,87 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		memset(&flags, 0, sizeof(flags));
 		memset(&sp1, 0, sizeof(flags));
 		memset(&sp2, 0, sizeof(flags));
+		
+		if ((redis_get_int(redis, "HGET", callid, "streams_count", &streams_count) < 0) || (streams_count % 2)) 
+			goto next;
+		
+		syslog(LOG_ERR, "Retrieve streams_count [%u]", streams_count);
 
 		syslog(LOG_INFO, "Retrieve CID [%.*s]", callid->len, callid->s);
+		
+		for (stream_pair = 0; stream_pair < streams_count/2; stream_pair++) {
 
-		// FIXME make stream id dynamic
-		if (__retrieve_stream_params(redis, callid, 0, &sp1, &rtp_bridge_port1, &rtcp_bridge_port1) < 0)
-			goto next;
+			if (__retrieve_stream_params(redis, callid, 2*stream_pair, &sp1, &rtp_bridge_port1, &rtcp_bridge_port1) < 0)
+					goto next;
 
-		// FIXME make stream id dynamic
-		if (__retrieve_stream_params(redis, callid, 1, &sp2, &rtp_bridge_port2, &rtcp_bridge_port2) < 0)
-			goto next;
+	
+			if (__retrieve_stream_params(redis, callid, 2*stream_pair+1, &sp2, &rtp_bridge_port2, &rtcp_bridge_port2) < 0)
+					goto next;
 
-		syslog(LOG_INFO, "Retrieve rtp bridge ports 1 [%u] and 2 [%u]", rtp_bridge_port1, rtp_bridge_port2);
-		syslog(LOG_INFO, "Retrieve rtcp bridge ports 1 [%u] and 2 [%u]", rtcp_bridge_port1, rtcp_bridge_port2);
+			syslog(LOG_INFO, "Retrieve rtp bridge ports 1 [%u] and 2 [%u]", rtp_bridge_port1, rtp_bridge_port2);
+			syslog(LOG_INFO, "Retrieve rtcp bridge ports 1 [%u] and 2 [%u]", rtcp_bridge_port1, rtcp_bridge_port2);
 
-#ifdef obsolete_dtls
-		syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, rtp_bridge_port1);
-		syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  rtp_bridge_port2);
-		ZERO(sp1.fingerprint);
-		ZERO(sp2.fingerprint);
-#endif
+	#ifdef obsolete_dtls
+			syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, rtp_bridge_port1);
+			syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  rtp_bridge_port2);
+			ZERO(sp1.fingerprint);
+			ZERO(sp2.fingerprint);
+	#endif
 
-		mutex_lock((pthread_mutex_t*)&cm->hashlock);
-		if (rtp_bridge_port1 > rtp_bridge_port2 && rtp_bridge_port2 > 0)
-			cm->lastport = rtp_bridge_port2;
-		else
-			cm->lastport = rtp_bridge_port1;
+			mutex_lock((pthread_mutex_t*)&cm->hashlock);
+			if (rtp_bridge_port1 > rtp_bridge_port2 && rtp_bridge_port2 > 0)
+				cm->lastport = rtp_bridge_port2;
+			else
+				cm->lastport = rtp_bridge_port1;
 
-		mutex_unlock((pthread_mutex_t*)&cm->hashlock);
+			mutex_unlock((pthread_mutex_t*)&cm->hashlock);
 
-		if (bit_array_isset(cm->ports_used, cm->lastport)) {
-			syslog(LOG_ERR, "Port #%d has already been used", cm->lastport);
-			goto next;
-		}
+			if (bit_array_isset(cm->ports_used, cm->lastport)) {
+				syslog(LOG_ERR, "Port #%d has already been used", cm->lastport);
+				goto next;
+			}
 
-		sp1.index = 1;
-		sp2.index = 1;
+			sp1.index = 1;
+			sp2.index = 1;
 
-		// get call tags
-		if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
-			goto next;
+			// get call tags
+			if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
+				goto next;
 
-		if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
-			goto next;
+			if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
+				goto next;
 
-		// get call tos
-		if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
-			goto next;
+			// get call tos
+			if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
+				goto next;
 
-		memset(&flags, 0, sizeof(flags));
-		__fill_flag(&flags, &sp1);
-		flags.tos = tos;
+			memset(&flags, 0, sizeof(flags));
+			__fill_flag(&flags, &sp1);
+			flags.tos = tos;
 
-		/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
-		 * the monologues are switched so we need either to switch the bridgeports
-		 * or the stream params
-		 */
-		flags.opmode = OP_OFFER;
-		if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, rtp_bridge_port2, rtp_bridge_port1) < 0) {
-			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-			goto next;
-		}
+			/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
+			 * the monologues are switched so we need either to switch the bridgeports
+			 * or the stream params
+			 */
+			flags.opmode = OP_OFFER;
+			if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, rtp_bridge_port2, rtp_bridge_port1) < 0) {
+				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+				goto next;
+			}
 
 
-		memset(&flags, 0, sizeof(flags));
-		__fill_flag(&flags, &sp2);
-		flags.tos = tos;
+			memset(&flags, 0, sizeof(flags));
+			__fill_flag(&flags, &sp2);
+			flags.tos = tos;
 
-		/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
-		 * the ones passed in the answer stage
-		 */
-		flags.opmode = OP_ANSWER;
-		if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER, 0, 0) < 0) {
-			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-			goto next;
+			/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
+			 * the ones passed in the answer stage
+			 */
+			flags.opmode = OP_ANSWER;
+			if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER, 0, 0) < 0) {
+				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+				goto next;
+			}
 		}
 next:
 //		if (callid->s)
