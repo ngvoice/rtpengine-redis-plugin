@@ -79,7 +79,7 @@ static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
-	unsigned int wanted_start_port1, unsigned int wanted_start_port2);
+	unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port, unsigned int streams_count);
 static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp);
 
 void mod_redis_update(struct call *call, struct redis *redis) {
@@ -411,21 +411,33 @@ err:
 }
 #endif
 
+/* substitutes the first half with the second half of the array */
+static void swap_bridgeports(unsigned int *rtp_bridge_port, unsigned int len) {
+	unsigned int iter;
+	unsigned int aux;
+
+	for (iter = 0; iter < len / 2; iter++) {
+		aux = rtp_bridge_port[iter];
+		rtp_bridge_port[iter] = rtp_bridge_port[iter + len / 2];
+		rtp_bridge_port[iter + len / 2] = aux;
+	}
+}
+
 int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	str *list = NULL;
 	str ft = {0,0};
 	str tt = {0,0};
 	str *callid = NULL;
-	int length = 0, streams_count = 0, stream_pair = 0;
+	int length = 0, streams_count = 0, stream_iter = 0;
 	int i;
-	struct stream_params sp1;
-	struct stream_params sp2;
-	struct sdp_ng_flags flags;
-	unsigned int rtp_bridge_port1 = 0, rtcp_bridge_port1 = 0;
-	unsigned int rtp_bridge_port2 = 0, rtcp_bridge_port2 = 0;
 	unsigned int tos = 0;
+	struct stream_params *sp;
+	struct sdp_ng_flags *flags;
+	unsigned int *rtp_bridge_port;
+	unsigned int *rtcp_bridge_port;
 
 	syslog(LOG_INFO, __FUNCTION__);
+
 
 #ifdef obsolete_dtls
 	// get the certificate newly generated
@@ -433,101 +445,87 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		return -1;
 #endif
 
+	// get list of calls
 	if (__retrieve_call_list(redis, cm, &list, &length) < 0)
 		return -1;
 
 	for (i = 0; i < length; i++) {
 		callid = &list[i];
+		syslog(LOG_INFO, "Retrieve CID [%.*s]", callid->len, callid->s);
 
-		memset(&flags, 0, sizeof(flags));
-		memset(&sp1, 0, sizeof(flags));
-		memset(&sp2, 0, sizeof(flags));
-		
+		// get call tags
+		if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
+			goto next;
+
+		if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
+			goto next;
+
+		// get call tos
+		if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
+			goto next;
+		syslog(LOG_INFO, "Retrieve call TOS = %u", tos);
+
+		// get number of stream params; 2 for audio only, 4 for audio + video
 		if ((redis_get_int(redis, "HGET", callid, "streams_count", &streams_count) < 0) || (streams_count % 2)) 
 			goto next;
-		
 		syslog(LOG_ERR, "Retrieve streams_count [%u]", streams_count);
 
-		syslog(LOG_INFO, "Retrieve CID [%.*s]", callid->len, callid->s);
-		
-		for (stream_pair = 0; stream_pair < streams_count/2; stream_pair++) {
+		// alloc stream params and bridgeport vector
+		sp = (struct stream_params *) calloc (streams_count, sizeof(struct stream_params));
+		flags = (struct sdp_ng_flags *) calloc (streams_count, sizeof(struct sdp_ng_flags));
+		rtp_bridge_port = (unsigned int *) calloc (streams_count, sizeof(unsigned int));
+		rtcp_bridge_port = (unsigned int *) calloc (streams_count, sizeof(unsigned int));
 
-			if (__retrieve_stream_params(redis, callid, 2*stream_pair, &sp1, &rtp_bridge_port1, &rtcp_bridge_port1) < 0)
+		// retrieve call stream params and r(c)tp bridgeports
+		for (stream_iter = 0; stream_iter < streams_count; stream_iter++) {
+			syslog(LOG_ERR, "intra stream_iter = %d", stream_iter);
+
+			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_port[stream_iter], &rtcp_bridge_port[stream_iter]) < 0)
 					goto next;
 
-	
-			if (__retrieve_stream_params(redis, callid, 2*stream_pair+1, &sp2, &rtp_bridge_port2, &rtcp_bridge_port2) < 0)
-					goto next;
+			syslog(LOG_ERR, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
+				rtp_bridge_port[stream_iter], rtcp_bridge_port[stream_iter]);
+#ifdef obsolete_dtls
+			syslog(LOG_INFO, "%d rtp %d rtcp %d fingerprint %p bp %d", stream_iter, sp[stream_iter].rtp_endpoint.port, sp[stream_iter].rtcp_endpoint.port,
+				sp[stream_iter].fingerprint.hash_func, rtp_bridge_port[stream_iter]);
+			ZERO(sp[stream_iter].fingerprint);
+#endif
+			sp[stream_iter].index = 1;
 
-			syslog(LOG_INFO, "Retrieve rtp bridge ports 1 [%u] and 2 [%u]", rtp_bridge_port1, rtp_bridge_port2);
-			syslog(LOG_INFO, "Retrieve rtcp bridge ports 1 [%u] and 2 [%u]", rtcp_bridge_port1, rtcp_bridge_port2);
-
-	#ifdef obsolete_dtls
-			syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, rtp_bridge_port1);
-			syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  rtp_bridge_port2);
-			ZERO(sp1.fingerprint);
-			ZERO(sp2.fingerprint);
-	#endif
-
-			mutex_lock((pthread_mutex_t*)&cm->hashlock);
-			if (rtp_bridge_port1 > rtp_bridge_port2 && rtp_bridge_port2 > 0)
-				cm->lastport = rtp_bridge_port2;
-			else
-				cm->lastport = rtp_bridge_port1;
-
-			mutex_unlock((pthread_mutex_t*)&cm->hashlock);
-
-			if (bit_array_isset(cm->ports_used, cm->lastport)) {
-				syslog(LOG_ERR, "Port #%d has already been used", cm->lastport);
-				goto next;
+			__fill_flag(&flags[stream_iter], &sp[stream_iter]);
+			flags[stream_iter].tos = tos;
+			if (stream_iter % 2 == 0) {
+				flags[stream_iter].opmode = OP_OFFER;
+			} else {
+				flags[stream_iter].opmode = OP_ANSWER;
 			}
+		}
 
-			sp1.index = 1;
-			sp2.index = 1;
+		// switch the first half of the bridgeports with the second half
+		// this is necessary due to rtpengine commit 16b42fbd62d930f8a38283c5086fe7ac026e80e6
+		swap_bridgeports(rtp_bridge_port, streams_count);
+		swap_bridgeports(rtcp_bridge_port, streams_count);
 
-			// get call tags
-			if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
-				goto next;
+		// process offer
+		if (__process_call(callid, cm, sp, &ft, NULL, flags, OP_OFFER, rtp_bridge_port, rtcp_bridge_port, streams_count) < 0) {
+			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			goto next;
+		}
 
-			if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
-				goto next;
-
-			// get call tos
-			if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
-				goto next;
-
-			memset(&flags, 0, sizeof(flags));
-			__fill_flag(&flags, &sp1);
-			flags.tos = tos;
-
-			/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
-			 * the monologues are switched so we need either to switch the bridgeports
-			 * or the stream params
-			 */
-			flags.opmode = OP_OFFER;
-			if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, rtp_bridge_port2, rtp_bridge_port1) < 0) {
-				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-				goto next;
-			}
-
-
-			memset(&flags, 0, sizeof(flags));
-			__fill_flag(&flags, &sp2);
-			flags.tos = tos;
-
-			/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
-			 * the ones passed in the answer stage
-			 */
-			flags.opmode = OP_ANSWER;
-			if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER, 0, 0) < 0) {
-				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-				goto next;
-			}
+		// process answer
+		if (__process_call(callid, cm, sp, &ft, &tt, flags, OP_ANSWER, rtp_bridge_port, rtcp_bridge_port, streams_count) < 0) {
+			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			goto next;
 		}
 next:
 //		if (callid->s)
 //			g_free(callid->s);
 		;
+		// TODO: don't like this alloc and free; maybe in the future we make static like sp[8] => 4 streams (audio/video) per call
+		free(sp);
+		free(flags);
+		free(rtp_bridge_port);
+		free(rtcp_bridge_port);
 	}
 	//	if (list)
 	//		g_free(list);
@@ -550,12 +548,14 @@ static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp) {
 
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp,
 		str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
-		unsigned int wanted_start_port1, unsigned int wanted_start_port2) {
+		unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port, unsigned int streams_count) {
 
+	unsigned int stream_iter = 0;
 	struct call *call = NULL;
 	GQueue streams = G_QUEUE_INIT;
 	struct call_monologue *monologue = NULL;
 
+		syslog(LOG_ERR, "intraa porcess call");
 	if (!(call = call_get_opmode(callid, cm, op_mode))) {
 		syslog(LOG_ERR, "error obtaining call using op_mode=%d\n", op_mode);
 		goto error;
@@ -582,11 +582,27 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		monologue->tagtype = TO_TAG;
 	}
 
-	g_queue_push_tail(&streams, sp);
+	// add the offer/answer stream params depending on the op_mode
+	for (stream_iter = 0; stream_iter < streams_count; stream_iter++) {
+		if (op_mode == OP_OFFER && stream_iter < streams_count / 2) {
+			g_queue_push_tail(&streams, &sp[stream_iter]);
+		} else if (op_mode == OP_ANSWER && stream_iter >= streams_count / 2) {
+			g_queue_push_tail(&streams, &sp[stream_iter]);
+		}
+	}
 
-	if (monologue_offer_answer(monologue, &streams, flags, wanted_start_port1, wanted_start_port2) < 0) {
-		syslog(LOG_ERR, "error processing monologue\n");
-		goto error;
+	if (op_mode == OP_OFFER) {
+		// call rtpengine main logic
+		if (monologue_offer_answer(monologue, &streams, &flags[0], rtp_bridge_port, streams_count) < 0) {
+			syslog(LOG_ERR, "error processing monologue\n");
+			goto error;
+		}
+	} else if (op_mode == OP_ANSWER) {
+		// call rtpengine main logic
+		if (monologue_offer_answer(monologue, &streams, &flags[1], rtp_bridge_port, streams_count) < 0) {
+			syslog(LOG_ERR, "error processing monologue\n");
+			goto error;
+		}
 	}
 
 	rwlock_unlock_w(&call->master_lock);
@@ -947,7 +963,7 @@ error:
 }
 
 static int __insert_stream_params(struct redis *redis, str* callid, int stream_id,
-		struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port) { 
+		struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port) {
 	char key[128];
 	const char *crypto_name = __crypto_find_name(sp->crypto.crypto_suite);
         struct rtp_payload_type *pt;
@@ -1046,6 +1062,12 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
 	snprintf(key, sizeof(key), "%d:consecutive_ports", stream_id);
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->consecutive_ports)) < 0)
 		goto error;
+
+			char buf[64];
+			smart_ntop_p(buf, &sp->rtp_endpoint.ip46, sizeof(buf));
+			syslog(LOG_INFO, "insert RTP: %s:%d", buf, sp->rtp_endpoint.port);
+			smart_ntop_p(buf, &sp->rtcp_endpoint.ip46, sizeof(buf));
+			syslog(LOG_INFO, "insert RTCP:%s:%d", buf, sp->rtcp_endpoint.port);
 
 	return 1;
 error:
