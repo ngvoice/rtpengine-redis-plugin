@@ -20,6 +20,86 @@ char *__module_version = "redis/9";
 #define DECL_MEMBER_OFFSET_SIZE(_s_, _m_) DECL_MEMBER_OFFSET(_s_, _m_) \
                                           DECL_MEMBER_SIZE(_s_, _m_)
 
+/* REDIS call keys */
+#define CALL_TT_KEY				0
+#define CALL_FT_KEY				1
+#define CALL_LASTPORT_KEY			2
+#define CALL_TOS_KEY				3
+#define CALL_STREAM_COUNT_KEY			4
+#define CALL_MAX_KEY				5
+
+/* REDIS stream keys */
+#define STREAM_PAYLOAD_TYPE_KEY			0
+#define STREAM_PAYLOAD_COUNT_KEY		1
+#define STREAM_FLAGS_KEY			2
+#define STREAM_RTP_BRIDGE_PORT_KEY		3
+#define STREAM_RTCP_BRIDGE_PORT_KEY		4
+#define STREAM_INDEX_KEY			5
+#define STREAM_FINGER_DIGEST_KEY		6
+#define STREAM_FINGER_NAME_KEY			7
+#define STREAM_CRYPTO_NAME_KEY			8
+#define STREAM_CRYPTO_KEY			9
+#define STREAM_CRYPTO_SALT_KEY			10
+#define STREAM_CRYPTO_MKI_KEY			11
+#define STREAM_CRYPTO_MKI_LEN_KEY		12
+#define STREAM_TYPE_KEY				13
+#define STREAM_DIRECTION_KEY			14
+#define STREAM_FAMILY_KEY			15
+#define STREAM_TRANSPORT_KEY			16
+#define STREAM_SDES_KEY				17
+#define STREAM_RTP_ENDPOINT_KEY			18
+#define STREAM_RTCP_ENDPOINT_KEY		19
+#define STREAM_CONSECUTIVE_PORTS_KEY		20
+#define STREAM_MAX_KEY				21
+
+const char *redis_call_keys[CALL_MAX_KEY] = {
+	"tt",
+	"ft",
+	"lastport",
+	"tos",
+	"stream-count",
+};
+
+const char *redis_stream_keys[STREAM_MAX_KEY] = {
+	"payload-type",
+	"payload-count",
+	"flags",
+	"rtp-bridge-port",
+	"rtcp-bridge-port",
+	"index",
+	"fingerprint-digest",
+	"fingerprint-name",
+	"crypto-name",
+	"crypto-key",
+	"crypto-salt",
+	"crypto-mki",
+	"crypto-mki-len",
+	"type",
+	"stream_direction",
+	"desired_family",
+	"transport-index",
+	"sdes-tag",
+	"rtp-endpoint",
+	"rtcp-endpoint",
+	"consecutive_ports",
+};
+
+static const char* redis_get_call_key(unsigned int key) {
+	if (key >= CALL_MAX_KEY) {
+		return NULL;
+	}
+
+	return redis_call_keys[key];
+}
+
+static const char* redis_get_stream_key(unsigned int key) {
+	if (key >= STREAM_MAX_KEY) {
+		return NULL;
+	}
+
+	return redis_stream_keys[key];
+}
+
 DECL_STRUCT_SIZE(call);
 DECL_STRUCT_SIZE(packet_stream);
 DECL_STRUCT_SIZE(call_media);
@@ -79,7 +159,7 @@ static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
-	unsigned int wanted_start_port1, unsigned int wanted_start_port2);
+	unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count);
 static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp);
 
 void mod_redis_update(struct call *call, struct redis *redis) {
@@ -106,12 +186,12 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 		monologue = monologue_iter->data;
 
 		if (!set) {
-			if (redis_insert_str_value_async(redis, &call->callid, "tt", &monologue->tag) < 0) {
+			if (redis_insert_str_value_async(redis, &call->callid, redis_get_call_key(CALL_TT_KEY), &monologue->tag) < 0) {
 				syslog(LOG_ERR, "couldn't insert ps counter into database\n");
 				return;
 			}
 
-			if (monologue->active_dialogue && redis_insert_str_value_async(redis, &call->callid, "ft", &monologue->active_dialogue->tag) < 0) {
+			if (monologue->active_dialogue && redis_insert_str_value_async(redis, &call->callid,  redis_get_call_key(CALL_FT_KEY), &monologue->active_dialogue->tag) < 0) {
 				syslog(LOG_ERR, "couldn't insert ps counter into database\n");
 				return;
 			}
@@ -197,28 +277,30 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 					SP_SET((&sp), MEDIA_HANDOVER);
 			}
 
+			// the OFFER streams are inserted firstly and the ANSWER streams are inserted lastly in the database
+			// this is the behaviour due to rtpengine's call_offer_answer_ng()
 			__insert_stream_params(redis, &call->callid, sp_counter++, &sp, rtp_bridge_port, rtcp_bridge_port);
 
 			char buf[64];
 			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
-			syslog(LOG_INFO, "%s:%d", buf, sp.rtp_endpoint.port);
+			syslog(LOG_INFO, "RTP: %s:%d", buf, sp.rtp_endpoint.port);
 			smart_ntop_p(buf, &sp.rtcp_endpoint.ip46, sizeof(buf));
-			syslog(LOG_INFO, "rtcp: %s:%d", buf, sp.rtcp_endpoint.port);
+			syslog(LOG_INFO, "RTCP: %s:%d", buf, sp.rtcp_endpoint.port);
 		}
 	}
 
-	if (redis_insert_int_value_async(redis, &call->callid, "master-lastport", call->callmaster->lastport) < 0) {
+	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_LASTPORT_KEY), call->callmaster->lastport) < 0) {
 		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
 		return;
 	}
 
-	if (redis_insert_int_value_async(redis, &call->callid, "streams_count", sp_counter) < 0) {
+	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), sp_counter) < 0) {
 		syslog(LOG_ERR, "couldn't insert streams count into database\n");
 		return;
 	}
 
 	// keep call tos in order to fill flags.tos when redis restore
-	if (redis_insert_uint_value_async(redis, &call->callid, "call-tos", call->tos) < 0) {
+	if (redis_insert_uint_value_async(redis, &call->callid, redis_get_call_key(CALL_TOS_KEY), call->tos) < 0) {
 		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
 		return;
 	}
@@ -411,19 +493,32 @@ err:
 }
 #endif
 
+/* substitutes the first half with the second half of the array */
+static void swap_bridgeports(unsigned int *rtp_bridge_ports, unsigned int len) {
+	unsigned int iter;
+	unsigned int aux;
+
+	for (iter = 0; iter < len / 2; iter++) {
+		aux = rtp_bridge_ports[iter];
+		rtp_bridge_ports[iter] = rtp_bridge_ports[iter + len / 2];
+		rtp_bridge_ports[iter + len / 2] = aux;
+	}
+}
+
 int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	str *list = NULL;
 	str ft = {0,0};
 	str tt = {0,0};
 	str *callid = NULL;
-	int length = 0, streams_count = 0, stream_pair = 0;
+	int length = 0, stream_count = 0, stream_iter = 0;
 	int i;
-	struct stream_params sp1;
-	struct stream_params sp2;
-	struct sdp_ng_flags flags;
-	unsigned int rtp_bridge_port1 = 0, rtcp_bridge_port1 = 0;
-	unsigned int rtp_bridge_port2 = 0, rtcp_bridge_port2 = 0;
 	unsigned int tos = 0;
+
+	// useful arrays
+	struct stream_params *sp;
+	struct sdp_ng_flags *flags;
+	unsigned int *rtp_bridge_ports;
+	unsigned int *rtcp_bridge_ports;
 
 	syslog(LOG_INFO, __FUNCTION__);
 
@@ -433,101 +528,91 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		return -1;
 #endif
 
+	// get list of calls
 	if (__retrieve_call_list(redis, cm, &list, &length) < 0)
 		return -1;
 
 	for (i = 0; i < length; i++) {
+		// get call
 		callid = &list[i];
+		syslog(LOG_INFO, "Retrieve call ID [%.*s]", callid->len, callid->s);
 
-		memset(&flags, 0, sizeof(flags));
-		memset(&sp1, 0, sizeof(flags));
-		memset(&sp2, 0, sizeof(flags));
-		
-		if ((redis_get_int(redis, "HGET", callid, "streams_count", &streams_count) < 0) || (streams_count % 2)) 
+		// get call from tag
+		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_FT_KEY), &ft) < 0)
 			goto next;
-		
-		syslog(LOG_ERR, "Retrieve streams_count [%u]", streams_count);
+		syslog(LOG_INFO, "Retrieve call from tag [%.*s]", ft.len, ft.s);
 
-		syslog(LOG_INFO, "Retrieve CID [%.*s]", callid->len, callid->s);
-		
-		for (stream_pair = 0; stream_pair < streams_count/2; stream_pair++) {
+		// get call to tag
+		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_TT_KEY), &tt) < 0)
+			goto next;
+		syslog(LOG_INFO, "Retrieve call to tag [%.*s]", tt.len, tt.s);
 
-			if (__retrieve_stream_params(redis, callid, 2*stream_pair, &sp1, &rtp_bridge_port1, &rtcp_bridge_port1) < 0)
+		// get call tos
+		if (redis_get_uint(redis, "HGET", callid, redis_get_call_key(CALL_TOS_KEY), &tos) < 0)
+			goto next;
+		syslog(LOG_INFO, "Retrieve call TOS [%u]", tos);
+
+		// get number of stream params; 2 for audio only, 4 for audio + video
+		if ((redis_get_int(redis, "HGET", callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), &stream_count) < 0) || (stream_count % 2))
+			goto next;
+		syslog(LOG_INFO, "Retrieve call stream_count [%u]", stream_count);
+
+		// alloc stream params and bridgeport vector
+		sp = (struct stream_params *) calloc (stream_count, sizeof(struct stream_params));
+		flags = (struct sdp_ng_flags *) calloc (stream_count, sizeof(struct sdp_ng_flags));
+		rtp_bridge_ports = (unsigned int *) calloc (stream_count, sizeof(unsigned int));
+		rtcp_bridge_ports = (unsigned int *) calloc (stream_count, sizeof(unsigned int));
+
+		// retrieve call stream params and r(c)tp bridgeports
+		// due to insertion order, the OFFER stream params are retrieved first and the ANSWER last
+		for (stream_iter = 0; stream_iter < stream_count; stream_iter++) {
+			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_ports[stream_iter], &rtcp_bridge_ports[stream_iter]) < 0)
 					goto next;
 
-	
-			if (__retrieve_stream_params(redis, callid, 2*stream_pair+1, &sp2, &rtp_bridge_port2, &rtcp_bridge_port2) < 0)
-					goto next;
+			syslog(LOG_INFO, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
+				rtp_bridge_ports[stream_iter], rtcp_bridge_ports[stream_iter]);
+#ifdef obsolete_dtls
+			syslog(LOG_INFO, "%d rtp %d rtcp %d fingerprint %p bp %d", stream_iter, sp[stream_iter].rtp_endpoint.port, sp[stream_iter].rtcp_endpoint.port,
+				sp[stream_iter].fingerprint.hash_func, rtp_bridge_ports[stream_iter]);
+			ZERO(sp[stream_iter].fingerprint);
+#endif
+			sp[stream_iter].index = 1;
 
-			syslog(LOG_INFO, "Retrieve rtp bridge ports 1 [%u] and 2 [%u]", rtp_bridge_port1, rtp_bridge_port2);
-			syslog(LOG_INFO, "Retrieve rtcp bridge ports 1 [%u] and 2 [%u]", rtcp_bridge_port1, rtcp_bridge_port2);
-
-	#ifdef obsolete_dtls
-			syslog(LOG_INFO, "1 rtp %d rtcp %d fingerprint %p bp %d", sp1.rtp_endpoint.port, sp1.rtcp_endpoint.port, sp1.fingerprint.hash_func, rtp_bridge_port1);
-			syslog(LOG_INFO, "2 rtp %d rtcp %d fingerprint %p bp %d", sp2.rtp_endpoint.port, sp2.rtcp_endpoint.port, sp2.fingerprint.hash_func,  rtp_bridge_port2);
-			ZERO(sp1.fingerprint);
-			ZERO(sp2.fingerprint);
-	#endif
-
-			mutex_lock((pthread_mutex_t*)&cm->hashlock);
-			if (rtp_bridge_port1 > rtp_bridge_port2 && rtp_bridge_port2 > 0)
-				cm->lastport = rtp_bridge_port2;
-			else
-				cm->lastport = rtp_bridge_port1;
-
-			mutex_unlock((pthread_mutex_t*)&cm->hashlock);
-
-			if (bit_array_isset(cm->ports_used, cm->lastport)) {
-				syslog(LOG_ERR, "Port #%d has already been used", cm->lastport);
-				goto next;
+			// only the OFFER and ANSWER flags are needed but we keep per stream_params flags
+			__fill_flag(&flags[stream_iter], &sp[stream_iter]);
+			flags[stream_iter].tos = tos;
+			if (stream_iter % 2 == 0) {
+				flags[stream_iter].opmode = OP_OFFER;
+			} else {
+				flags[stream_iter].opmode = OP_ANSWER;
 			}
+		}
 
-			sp1.index = 1;
-			sp2.index = 1;
+		// switch the first half of the bridgeports with the second half
+		// this is necessary due to rtpengine commit 16b42fbd62d930f8a38283c5086fe7ac026e80e6 which swaps the OFFER/ANSWER stream logic
+		swap_bridgeports(rtp_bridge_ports, stream_count);
+		swap_bridgeports(rtcp_bridge_ports, stream_count);
 
-			// get call tags
-			if (redis_get_str(redis, "HGET", callid, "ft", &ft) < 0)
-				goto next;
+		// process offer
+		if (__process_call(callid, cm, sp, &ft, NULL, flags, OP_OFFER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
+			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			goto next;
+		}
 
-			if (redis_get_str(redis, "HGET", callid, "tt", &tt) < 0)
-				goto next;
-
-			// get call tos
-			if (redis_get_uint(redis, "HGET", callid, "call-tos", &tos) < 0)
-				goto next;
-
-			memset(&flags, 0, sizeof(flags));
-			__fill_flag(&flags, &sp1);
-			flags.tos = tos;
-
-			/* due to the rtpengine 16b42fbd62d930f8a38283c5086fe7ac026e80e6 commit
-			 * the monologues are switched so we need either to switch the bridgeports
-			 * or the stream params
-			 */
-			flags.opmode = OP_OFFER;
-			if (__process_call(callid, cm, &sp1, &ft, NULL, &flags, OP_OFFER, rtp_bridge_port2, rtp_bridge_port1) < 0) {
-				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-				goto next;
-			}
-
-
-			memset(&flags, 0, sizeof(flags));
-			__fill_flag(&flags, &sp2);
-			flags.tos = tos;
-
-			/* the rtp_bridge_ports are allocated in the offer stage so we can ignore
-			 * the ones passed in the answer stage
-			 */
-			flags.opmode = OP_ANSWER;
-			if (__process_call(callid, cm, &sp2, &ft, &tt, &flags, OP_ANSWER, 0, 0) < 0) {
-				syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-				goto next;
-			}
+		// process answer
+		if (__process_call(callid, cm, sp, &ft, &tt, flags, OP_ANSWER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
+			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			goto next;
 		}
 next:
 //		if (callid->s)
 //			g_free(callid->s);
 		;
+		// TODO: don't like this alloc and free; maybe in the future we make static like sp[8] => 4 media per call
+		free(sp);
+		free(flags);
+		free(rtp_bridge_ports);
+		free(rtcp_bridge_ports);
 	}
 	//	if (list)
 	//		g_free(list);
@@ -550,8 +635,9 @@ static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp) {
 
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp,
 		str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
-		unsigned int wanted_start_port1, unsigned int wanted_start_port2) {
+		unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count) {
 
+	unsigned int stream_iter = 0;
 	struct call *call = NULL;
 	GQueue streams = G_QUEUE_INIT;
 	struct call_monologue *monologue = NULL;
@@ -561,32 +647,67 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		goto error;
 	}
 
-	/* fix the call_get_mono_dialogue() for 4.1 (this is not needed for 4.0 or 3.3.0)
-	 * ..see also call_offer_answer_ng() in rtpengine's call_interfaces.c
-	 **/
-	if (op_mode == OP_ANSWER) {
-		str_swap(tt, ft);
-	}
+	// clear the bridgeports queue
+	g_queue_clear(&call->rtp_bridge_ports);
 
-	if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
-		syslog(LOG_ERR, "error allocating monologue\n");
-		goto error;
-	}
+	switch (op_mode) {
+		case OP_OFFER:
+			// get/create monologue
+			if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
+				syslog(LOG_ERR, "error allocating monologue\n");
+				goto error;
+			}
 
-	/* fix the tag-type displayed at "rtpengine-ctl sessions"
-	 * see also call_offer_answer_ng() in rtpengine's call_interfaces.c
-	 **/
-	if (op_mode == OP_OFFER) {
-		monologue->tagtype = FROM_TAG;
-	} else {
-		monologue->tagtype = TO_TAG;
-	}
+			// fix the tag-type displayed at "rtpengine-ctl sessions"
+			monologue->tagtype = FROM_TAG;
 
-	g_queue_push_tail(&streams, sp);
+			// add the OFFER stream params present in the first half of the sp array (e.g. sp1, sp2)
+			// push the correspondent bridge ports (e.g [sp1_bp, sp3_bp], [sp2_bp, sp4_bp])
+			for (stream_iter = 0; stream_iter < stream_count / 2; stream_iter++) {
+				g_queue_push_tail(&streams, &sp[stream_iter]);
+				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter]);
+				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter + stream_count / 2]);
+			}
 
-	if (monologue_offer_answer(monologue, &streams, flags, wanted_start_port1, wanted_start_port2) < 0) {
-		syslog(LOG_ERR, "error processing monologue\n");
-		goto error;
+			// call rtpengine main logic with OFFER flags
+			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2 - 1]) < 0) {
+				syslog(LOG_ERR, "error processing monologue\n");
+				goto error;
+			}
+
+			break;
+
+		case OP_ANSWER:
+			// fix the call_get_mono_dialogue() for 4.1 (this is not needed for 4.0 or 3.3.0)
+			// -> see also call_offer_answer_ng()->str_swap() in rtpengine's call_interfaces.c
+			str_swap(tt, ft);
+
+			// get/create monologue
+			if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
+				syslog(LOG_ERR, "error allocating monologue\n");
+				goto error;
+			}
+
+			// fix the tag-type displayed at "rtpengine-ctl sessions"
+			monologue->tagtype = TO_TAG;
+
+			// add the ANSWER stream params present in the second half of the sp array (e.g. sp3, sp4)
+			// no bridge ports needed (were allocated at the OFFER)
+			for (stream_iter = stream_count / 2; stream_iter < stream_count; stream_iter++) {
+				g_queue_push_tail(&streams, &sp[stream_iter]);
+			}
+
+			// call rtpengine main logic with ANSWER flags
+			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2]) < 0) {
+				syslog(LOG_ERR, "error processing monologue\n");
+				goto error;
+			}
+
+			break;
+
+		default:
+			syslog(LOG_ERR, "op_mode %d not found; need either OP_OFFER or OP_ANSWER\n", op_mode);
+			break;
 	}
 
 	rwlock_unlock_w(&call->master_lock);
@@ -768,13 +889,13 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	memset(sp, 0, sizeof(*sp));
 
 	// get the number of payload types for the stream param
-	snprintf(key, sizeof(key), "%d:PayloadTypeCount", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_PAYLOAD_COUNT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, &payload_type_count) < 0)
 		goto error;
 
 	// get the payload types for the stream param
 	for (payload_index = 0; payload_index < payload_type_count; payload_index++) {
-		snprintf(key, sizeof(key), "%d:PayloadType%d", stream_id, payload_index);
+		snprintf(key, sizeof(key), "%d:%s%d", stream_id, redis_get_stream_key(STREAM_PAYLOAD_TYPE_KEY), payload_index);
 		if (redis_get_uint(redis, "HGET", callid, key, &payload_type) < 0) {
 			goto error;
 		}
@@ -784,7 +905,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	}
 
 	// get the flags for the stream param
-	snprintf(key, sizeof(key), "%d:flags", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FLAGS_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -794,31 +915,31 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	//PS_CLEAR(sp, KERNELIZED);
 
 	// get the rtp bridge port for the stream param
-	snprintf(key, sizeof(key), "%d:rtp_bridge_port", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTP_BRIDGE_PORT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, rtp_bridge_port) < 0)
 		goto error;
 
 	// get the rtcp bridge port for the stream param
-	snprintf(key, sizeof(key), "%d:rtcp_bridge_port", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_BRIDGE_PORT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, rtcp_bridge_port) < 0)
 		goto error;
 
 	syslog(LOG_INFO,"__retrieve_stream_params - Retrieved rtp_bridge_port=%u rtcp_bridge_port=%u",*rtp_bridge_port, *rtcp_bridge_port);
 
-	snprintf(key, sizeof(key), "%d:index", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_INDEX_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(&sp->index, aux);
 
 	// fingerprint setup for dtls
-	snprintf(key, sizeof(key), "%d:fingerprint-digest", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_DIGEST_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(sp->fingerprint.digest, aux);
 
-	snprintf(key, sizeof(key), "%d:fingerprint-name", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_NAME_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -835,7 +956,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	}
 
 	// crypto setup for SDES
-	snprintf(key, sizeof(key), "%d:crypto-name", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_NAME_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -851,7 +972,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		g_free(aux.s);
 	}
 
-	snprintf(key, sizeof(key), "%d:crypto-key", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -862,7 +983,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 
 	COPY_AND_FREE(sp->crypto.master_key, aux);
 
-	snprintf(key, sizeof(key), "%d:crypto-salt", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_SALT_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -873,13 +994,13 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 
 	COPY_AND_FREE(sp->crypto.master_salt, aux);
 
-	snprintf(key, sizeof(key), "%d:crypto-mki", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(sp->crypto.mki, aux);
 
-	snprintf(key, sizeof(key), "%d:crypto-mki-len", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_LEN_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -891,22 +1012,22 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		goto error;
 	}
 
-	snprintf(key, sizeof(key), "%d:type", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TYPE_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &sp->type) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:stream_direction",  stream_id);
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(&sp->direction, aux);
 	//memcpy(&sp->direction, aux.s, aux.len);
 
-	snprintf(key, sizeof(key), "%d:desired_family", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FAMILY_KEY));
 	if (redis_get_int(redis, "HGET", callid, key, &sp->desired_family) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:transport-index", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TRANSPORT_KEY));
 	if (redis_get_int(redis, "HGET", callid, key, &aux_int) < 0)
 		goto error;
 
@@ -916,25 +1037,25 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 
 	syslog(LOG_ERR, "---> %s | %s %s", sp->protocol->name, sp->protocol->srtp ? "y" : "n", sp->protocol->avpf ? "y" : "n");
 
-	snprintf(key, sizeof(key), "%d:sdes-tag", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_SDES_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(&sp->sdes_tag, aux);
 
-	snprintf(key, sizeof(key), "%d:rtp_endpoint",  stream_id);
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_RTP_ENDPOINT_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(&sp->rtp_endpoint, aux);
 
-	snprintf(key, sizeof(key), "%d:rtcp_endpoint", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_ENDPOINT_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
 	COPY_AND_FREE(&sp->rtcp_endpoint, aux);
 
-	snprintf(key, sizeof(key), "%d:consecutive_ports", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CONSECUTIVE_PORTS_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
 
@@ -947,103 +1068,100 @@ error:
 }
 
 static int __insert_stream_params(struct redis *redis, str* callid, int stream_id,
-		struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port) { 
+		struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port) {
 	char key[128];
 	const char *crypto_name = __crypto_find_name(sp->crypto.crypto_suite);
         struct rtp_payload_type *pt;
 	unsigned int payload_type_count = 0;
 
-	syslog(LOG_INFO,"__insert_stream_params - rtp_bridge_port = %u, rtcp_bridge_port = %u", rtp_bridge_port, rtcp_bridge_port);
+	while ((pt = g_queue_pop_head(&sp->rtp_payload_types))) {
+		snprintf(key, sizeof(key), "%d:%s%d", stream_id, redis_get_stream_key(STREAM_PAYLOAD_TYPE_KEY), payload_type_count);
+		if (redis_insert_uint_value_async(redis, callid, key, pt->payload_type) < 0)
+			goto error;
+		payload_type_count++;
+	}
 
-        while ((pt = g_queue_pop_head(&sp->rtp_payload_types))) {
-                snprintf(key, sizeof(key), "%d:PayloadType%d", stream_id, payload_type_count);
-                if (redis_insert_uint_value_async(redis, callid, key, pt->payload_type) < 0)
-                        goto error;
-                syslog(LOG_INFO, "__insert_stream_params - payload type inserted = %d", pt->payload_type);
-                payload_type_count++;
-        }
-
-	snprintf(key, sizeof(key), "%d:PayloadTypeCount", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_PAYLOAD_COUNT_KEY));
 	if (redis_insert_uint_value_async(redis, callid, key, payload_type_count) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:flags", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FLAGS_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, &sp->sp_flags, sizeof(sp->sp_flags)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:rtp_bridge_port", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTP_BRIDGE_PORT_KEY));
 	if (redis_insert_uint_value_async(redis, callid, key, (uint32_t)rtp_bridge_port) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:rtcp_bridge_port", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_BRIDGE_PORT_KEY));
 	if (redis_insert_uint_value_async(redis, callid, key, (uint32_t)rtcp_bridge_port) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:index", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_INDEX_KEY));
 	if (redis_insert_int_value_async(redis, callid, key, sp->index) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:fingerprint-digest", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_DIGEST_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, sp->fingerprint.digest, sizeof(sp->fingerprint.digest)) < 0)
 		goto error;
 
 	if (sp->fingerprint.hash_func) {
-		snprintf(key, sizeof(key), "%d:fingerprint-name", stream_id);
+		snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_NAME_KEY));
 		if (redis_insert_bin_value_async(redis, callid, key, sp->fingerprint.hash_func->name, strlen(sp->fingerprint.hash_func->name)) < 0)
 			goto error;
 	}
 
 	if (crypto_name) {
-		snprintf(key, sizeof(key), "%d:crypto-name", stream_id);
+		snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_NAME_KEY));
 		if (redis_insert_bin_value_async(redis, callid, key, crypto_name, strlen(crypto_name)) < 0)
 			goto error;
 	}
 
-	snprintf(key, sizeof(key), "%d:crypto-key", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, sp->crypto.master_key, sizeof(sp->crypto.master_key)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:crypto-salt", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_SALT_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, sp->crypto.master_salt, sizeof(sp->crypto.master_salt)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:crypto-mki", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, sp->crypto.mki, sp->crypto.mki_len) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:crypto-mki-len", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_LEN_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->crypto.mki_len)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:type", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TYPE_KEY));
 	if (redis_insert_str_value_async(redis, callid, key, &sp->type) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:stream_direction",  stream_id);
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->direction)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:desired_family", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FAMILY_KEY));
 	if (redis_insert_int_value_async(redis, callid, key, sp->desired_family) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:transport-index", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TRANSPORT_KEY));
 	if (redis_insert_int_value_async(redis, callid, key, sp->protocol->index) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:sdes-tag", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_SDES_KEY));
 	if (redis_insert_int_value_async(redis, callid, key, sp->sdes_tag) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:rtp_endpoint",  stream_id);
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_RTP_ENDPOINT_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->rtp_endpoint)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:rtcp_endpoint", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_ENDPOINT_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->rtcp_endpoint)) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:consecutive_ports", stream_id);
+	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CONSECUTIVE_PORTS_KEY));
 	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->consecutive_ports)) < 0)
 		goto error;
 
