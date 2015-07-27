@@ -6,10 +6,7 @@ CFLAGS+=        `pkg-config --cflags glib-2.0`
 CFLAGS+=        `pkg-config --cflags gthread-2.0`
 CFLAGS+=        `pkg-config --cflags openssl`
 
-LDFLAGS =        -shared -lhiredis -levent
-LDFLAGS+=	`pkg-config --libs glib-2.0`
-LDFLAGS+=	`pkg-config --libs gthread-2.0`
-LDFLAGS+=	`pkg-config --libs openssl`
+LDFLAGS =        -shared -lhiredis -levent -z muldefs
 
 SRCS=		re_redis_mod.c redis_storage.c
 OBJECTS=	$(SRCS:.c=.o) 
