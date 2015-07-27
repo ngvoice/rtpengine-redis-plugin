@@ -647,6 +647,9 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		goto error;
 	}
 
+	// clear the bridgeports queue
+	g_queue_clear(&call->rtp_bridge_ports);
+
 	switch (op_mode) {
 		case OP_OFFER:
 			// get/create monologue
@@ -658,15 +661,16 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 			// fix the tag-type displayed at "rtpengine-ctl sessions"
 			monologue->tagtype = FROM_TAG;
 
-			// add the OFFER stream params present in the first half of the sp array
-			for (stream_iter = 0; stream_iter < stream_count; stream_iter++) {
-				if (stream_iter < stream_count / 2) {
-					g_queue_push_tail(&streams, &sp[stream_iter]);
-				}
+			// add the OFFER stream params present in the first half of the sp array (e.g. sp1, sp2)
+			// push the correspondent bridge ports (e.g [sp1_bp, sp3_bp], [sp2_bp, sp4_bp])
+			for (stream_iter = 0; stream_iter < stream_count / 2; stream_iter++) {
+				g_queue_push_tail(&streams, &sp[stream_iter]);
+				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter]);
+				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter + stream_count / 2]);
 			}
 
 			// call rtpengine main logic with OFFER flags
-			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2 - 1], rtp_bridge_ports, stream_count) < 0) {
+			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2 - 1]) < 0) {
 				syslog(LOG_ERR, "error processing monologue\n");
 				goto error;
 			}
@@ -687,15 +691,14 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 			// fix the tag-type displayed at "rtpengine-ctl sessions"
 			monologue->tagtype = TO_TAG;
 
-			// add the ANSWER stream params present in the second half of the sp array
-			for (stream_iter = 0; stream_iter < stream_count; stream_iter++) {
-				if (stream_iter >= stream_count / 2) {
-					g_queue_push_tail(&streams, &sp[stream_iter]);
-				}
+			// add the ANSWER stream params present in the second half of the sp array (e.g. sp3, sp4)
+			// no bridge ports needed (were allocated at the OFFER)
+			for (stream_iter = stream_count / 2; stream_iter < stream_count; stream_iter++) {
+				g_queue_push_tail(&streams, &sp[stream_iter]);
 			}
 
 			// call rtpengine main logic with ANSWER flags
-			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2], rtp_bridge_ports, stream_count) < 0) {
+			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2]) < 0) {
 				syslog(LOG_ERR, "error processing monologue\n");
 				goto error;
 			}
