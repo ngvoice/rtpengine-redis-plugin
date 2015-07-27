@@ -10,7 +10,7 @@
 #include <hiredis/async.h>
 #include <hiredis/adapters/libevent.h>
 
-#include "../rtpengine/daemon/call.h"
+#include "./rtpengine/daemon/call.h"
 
 struct redis {
 	int db;

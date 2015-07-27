@@ -16,7 +16,7 @@ BINSO=		rtpengine-redis.so
 all:	$(SRCS) $(BINSO)
 
 rtpengine:
-	cd ../rtpengine/daemon && $(MAKE)
+	cd ./rtpengine/daemon && $(MAKE)
 
 $(BINSO): $(OBJECTS) 
 	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)

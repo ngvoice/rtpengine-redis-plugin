@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../rtpengine/daemon/sdp.h"
-#include "../rtpengine/daemon/call.h"
+#include "./rtpengine/daemon/sdp.h"
+#include "./rtpengine/daemon/call.h"
 #include "re_redis_mod.h"
 #include "redis_storage.h"
 

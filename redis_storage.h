@@ -13,7 +13,7 @@
 #include <arpa/inet.h>
 
 #include "re_redis_mod.h"
-#include "../rtpengine/daemon/str.h"
+#include "./rtpengine/daemon/str.h"
 
 #define CMD_BUFFER_SIZE 2048
 #define COPY_AND_FREE(_to_, _from_) if (_from_.s) { memcpy(_to_, _from_.s, _from_.len); g_free(_from_.s); }
