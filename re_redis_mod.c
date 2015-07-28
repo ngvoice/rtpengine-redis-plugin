@@ -26,7 +26,8 @@ char *__module_version = "redis/9";
 #define CALL_LASTPORT_KEY			2
 #define CALL_TOS_KEY				3
 #define CALL_STREAM_COUNT_KEY			4
-#define CALL_MAX_KEY				5
+#define CALL_CREATED_FROM_KEY			5
+#define CALL_MAX_KEY				6
 
 /* REDIS stream keys */
 #define STREAM_PAYLOAD_TYPE_KEY			0
@@ -58,6 +59,7 @@ const char *redis_call_keys[CALL_MAX_KEY] = {
 	"lastport",
 	"tos",
 	"stream-count",
+	"created-from",
 };
 
 const char *redis_stream_keys[STREAM_MAX_KEY] = {
@@ -158,7 +160,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
-static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
+static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, str *proxy, struct sdp_ng_flags *flags, enum call_opmode op_mode,
 	unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count);
 static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp);
 
@@ -176,6 +178,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 	unsigned int rtp_bridge_port = 0, rtcp_bridge_port = 0;
 	struct rtp_payload_type *pt;
 	GList *values, *iter;
+	str proxy = {0,0};
 
 	memset(&flags, 0, sizeof(flags));
 	memset(&sp, 0, sizeof(sp));
@@ -302,6 +305,14 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 	// keep call tos in order to fill flags.tos when redis restore
 	if (redis_insert_uint_value_async(redis, &call->callid, redis_get_call_key(CALL_TOS_KEY), call->tos) < 0) {
 		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
+		return;
+	}
+
+	// keep call created_from to identify details about control proxy
+	proxy.s = call->created_from;
+	proxy.len = strlen(call->created_from);
+	if (redis_insert_str_value_async(redis, &call->callid, redis_get_call_key(CALL_CREATED_FROM_KEY), &proxy) < 0) {
+		syslog(LOG_ERR, "couldn't insert proxy string into database\n");
 		return;
 	}
 
@@ -509,6 +520,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	str *list = NULL;
 	str ft = {0,0};
 	str tt = {0,0};
+	str proxy = {0,0};
 	str *callid = NULL;
 	int length = 0, stream_count = 0, stream_iter = 0;
 	int i;
@@ -552,6 +564,11 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 			goto next;
 		syslog(LOG_INFO, "Retrieve call TOS [%u]", tos);
 
+		// get call control proxy
+		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_CREATED_FROM_KEY), &proxy) < 0)
+			goto next;
+		syslog(LOG_INFO, "Retrieve call control proxy [%.*s]", proxy.len, proxy.s);
+
 		// get number of stream params; 2 for audio only, 4 for audio + video
 		if ((redis_get_int(redis, "HGET", callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), &stream_count) < 0) || (stream_count % 2))
 			goto next;
@@ -594,13 +611,13 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		swap_bridgeports(rtcp_bridge_ports, stream_count);
 
 		// process offer
-		if (__process_call(callid, cm, sp, &ft, NULL, flags, OP_OFFER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
+		if (__process_call(callid, cm, sp, &ft, NULL, &proxy, flags, OP_OFFER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
 			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
 
 		// process answer
-		if (__process_call(callid, cm, sp, &ft, &tt, flags, OP_ANSWER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
+		if (__process_call(callid, cm, sp, &ft, &tt, &proxy, flags, OP_ANSWER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
 			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
@@ -634,7 +651,7 @@ static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp) {
 }
 
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp,
-		str *ft, str *tt, struct sdp_ng_flags *flags, enum call_opmode op_mode,
+		str *ft, str *tt, str *proxy, struct sdp_ng_flags *flags, enum call_opmode op_mode,
 		unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count) {
 
 	unsigned int stream_iter = 0;
@@ -646,6 +663,9 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		syslog(LOG_ERR, "error obtaining call using op_mode=%d\n", op_mode);
 		goto error;
 	}
+
+	// keep control proxy info
+	call->created_from = call_strdup_len(call, proxy->s, proxy->len);
 
 	// clear the bridgeports queue
 	g_queue_clear(&call->rtp_bridge_ports);
