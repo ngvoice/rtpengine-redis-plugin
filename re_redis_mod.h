@@ -15,13 +15,8 @@
 
 #define plog(prio,fmt,args...)									\
 	do {											\
-		int loglevel = get_log_level();							\
-		if (LOG_LEVEL_MASK((prio)) > LOG_LEVEL_MASK(loglevel))				\
-			break;									\
-		if ((loglevel & LOG_FLAG_RESTORE) && !((prio) & LOG_FLAG_RESTORE))		\
-			break;									\
 		openlog("rtpengine-redis-plugin", LOG_PID | LOG_NDELAY, _log_facility);		\
-		__ilog(prio, "[%s] " fmt, __FUNCTION__, ##args);				\
+		ilog(prio, "[%s] " fmt, __FUNCTION__, ##args);				\
 		openlog("rtpengine", LOG_PID | LOG_NDELAY, _log_facility);			\
 	} while (0)
 
