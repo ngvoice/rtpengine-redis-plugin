@@ -44,12 +44,12 @@ static int __redis_insert_str_value(struct redis *redis, str *callid, const char
 	char cmd_buffer[CMD_BUFFER_SIZE];
 
 	if (value == NULL) {
-		syslog(LOG_ERROR, "str value is null\n");
+		plog(LOG_ERROR, "str value is null\n");
 		return -1;
 	}
 
 	if (value->len == 0) {
-		syslog(LOG_WARN, "[%s] value is empty\n", key);
+		plog(LOG_WARN, "[%s] value is empty\n", key);
 		return 1;
 	}
 
@@ -79,7 +79,7 @@ static int __redis_insert_bin_value(struct redis *redis, str *callid, const char
 	char str_call_id[512];
 
 	if (value == NULL || size == 0) {
-		syslog(LOG_WARN, "[mp:%.*s %s] empty binary value\n", callid->len, callid->s, key);
+		plog(LOG_WARN, "[mp:%.*s %s] empty binary value\n", callid->len, callid->s, key);
 		return 1;
 	}
 
@@ -94,9 +94,9 @@ static int __redis_insert_bin_value(struct redis *redis, str *callid, const char
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
 		if (!rpl)
-			syslog(LOG_ERR, "%s", redis->ctxt->errstr);
+			plog(LOG_ERR, "%s", redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
 			freeReplyObject(rpl);
 		}
 
@@ -162,13 +162,13 @@ static int __redis_insert_uint_value(struct redis *redis, str *callid, const cha
 static int __insert_value(struct redis *redis, const char* cmd, redisReply **rpl) {
 	*rpl = redisCommand(redis->ctxt, cmd);
 
-//	syslog(LOG_INFO, "cmd: [%s]\n", cmd);
+//	plog(LOG_INFO, "cmd: [%s]\n", cmd);
 
 	if (!(*rpl) || (*rpl)->type == REDIS_REPLY_ERROR) {
 		if (!*rpl)
-			syslog(LOG_ERR, "[%s]: %s", cmd, redis->ctxt->errstr);
+			plog(LOG_ERR, "[%s]: %s", cmd, redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "[%s]: %.*s", cmd, (*rpl)->len, (*rpl)->str);
+			plog(LOG_ERR, "[%s]: %.*s", cmd, (*rpl)->len, (*rpl)->str);
 			freeReplyObject(*rpl);
 		}
 
@@ -198,12 +198,12 @@ static struct redis *__alloc_redis(struct in_addr ip, uint16_t port, int db) {
 static struct redis *__redis_connect_async(struct redis *redis) {
 	redis->eb = event_base_new();
 
-	syslog(LOG_INFO, "Connecting (ASYNC) to Redis at %s:%d", redis->str_ip, redis->port);
+	plog(LOG_INFO, "Connecting (ASYNC) to Redis at %s:%d", redis->str_ip, redis->port);
 
 	redis->async_ctxt = redisAsyncConnect(redis->str_ip, redis->port);
 
 	if (redis->async_ctxt->err) {
-		syslog(LOG_ERR, "%s\n", redis->async_ctxt->errstr);
+		plog(LOG_ERR, "%s\n", redis->async_ctxt->errstr);
 		return NULL;
 	}
 
@@ -221,7 +221,7 @@ static struct redis *__redis_connect_async(struct redis *redis) {
 /*
 static void *__event_dispatcher(void *p) {
 	struct redis *redis = p;
-	syslog(LOG_ERR, "THREAD STARTED: %s\n", redis->str_ip);
+	plog(LOG_ERR, "THREAD STARTED: %s\n", redis->str_ip);
 	event_base_dispatch(redis->eb);
 	return NULL;
 }
@@ -239,7 +239,7 @@ struct redis *redis_connect(struct in_addr ip, uint16_t port, int db) {
 static struct redis *__redis_connect_sync(struct redis *r) {
 	struct timeval timeout = { 1, 500000 }; // 1.5 seconds
 
-	syslog(LOG_INFO, "Connecting to Redis at %s:%d", r->str_ip, r->port);
+	plog(LOG_INFO, "Connecting to Redis at %s:%d", r->str_ip, r->port);
 
 	if (r->ctxt)
 		redisFree(r->ctxt);
@@ -248,9 +248,9 @@ static struct redis *__redis_connect_sync(struct redis *r) {
 
 	if (r->ctxt == NULL || r->ctxt->err) {
 		if (!r->ctxt)
-			syslog(LOG_ERR, "Connection error: can't allocate Redis context");
+			plog(LOG_ERR, "Connection error: can't allocate Redis context");
 		else {
-			syslog(LOG_ERR, "Connection error: %s", r->ctxt->errstr);
+			plog(LOG_ERR, "Connection error: %s", r->ctxt->errstr);
 			redisFree(r->ctxt);
 		}
 
@@ -269,9 +269,9 @@ static int __redis_select_db(redisContext *ctxt, int db) {
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
 		if (!rpl)
-			syslog(LOG_ERR, "%s", ctxt->errstr);
+			plog(LOG_ERR, "%s", ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
 			freeReplyObject(rpl);
 		}
 		return -1;
@@ -289,9 +289,9 @@ int redis_exec(struct redis *redis, const char *cmd, redisReply **rpl) {
 
 	if (!(*rpl) || (*rpl)->type == REDIS_REPLY_ERROR) {
 		if (!*rpl)
-			syslog(LOG_ERR, "%s", redis->ctxt->errstr);
+			plog(LOG_ERR, "%s", redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", (*rpl)->len, (*rpl)->str);
+			plog(LOG_ERR, "%.*s", (*rpl)->len, (*rpl)->str);
 			freeReplyObject(*rpl);
 		}
 
@@ -331,18 +331,18 @@ int redis_get_str(struct redis *redis, const char *instruction, str *identifier,
 		return -1;
 
 	if (rpl->type != REDIS_REPLY_STRING && rpl->type != REDIS_REPLY_NIL) {
-		syslog(LOG_ERR,"Redis reply to [%s] is not a string/nil: type[%d]", cmd_buffer, rpl->type);
+		plog(LOG_ERR,"Redis reply to [%s] is not a string/nil: type[%d]", cmd_buffer, rpl->type);
 		freeReplyObject(rpl);
 		return -1;
 	}
 
 	if (rpl->type == REDIS_REPLY_NIL) {
-		syslog(LOG_INFO,"Value of %s is (nil)", key);
+		plog(LOG_INFO,"Value of %s is (nil)", key);
 		goto done;
 	}
 
 	if (rpl->len <= 0) {
-		syslog(LOG_ERR, "RPL len is equal to %d\n", rpl->len);
+		plog(LOG_ERR, "RPL len is equal to %d\n", rpl->len);
 		goto done;
 	}
 
@@ -353,7 +353,7 @@ int redis_get_str(struct redis *redis, const char *instruction, str *identifier,
 done:
 	freeReplyObject(rpl);
 
-	//syslog(LOG_INFO, "Got STRING value: %s=[%.*s]", key, value->len, value->s);
+	//plog(LOG_INFO, "Got STRING value: %s=[%.*s]", key, value->len, value->s);
 	return 1;
 }
 
@@ -370,18 +370,18 @@ done:
 		return -1;
 
 	if (rpl->type != REDIS_REPLY_STRING && rpl->type != REDIS_REPLY_NIL) {
-		syslog(LOG_ERR,"Redis reply to [%s] is not a string/nil: type[%d]", cmd_buffer, rpl->type);
+		plog(LOG_ERR,"Redis reply to [%s] is not a string/nil: type[%d]", cmd_buffer, rpl->type);
 		freeReplyObject(rpl);
 		return -1;
 	}
 
 	if (rpl->type == REDIS_REPLY_NIL) {
-		syslog(LOG_INFO,"Value of %s is (nil)", key);
+		plog(LOG_INFO,"Value of %s is (nil)", key);
 		goto done;
 	}
 
 	if (rpl->len <= 0) {
-		syslog(LOG_ERR, "RPL len is equal to %d\n", rpl->len);
+		plog(LOG_ERR, "RPL len is equal to %d\n", rpl->len);
 		goto done;
 	}
 
@@ -392,7 +392,7 @@ done:
 done:
 	freeReplyObject(rpl);
 
-	//syslog(LOG_INFO, "Got STRING value: %s=[%.*s]", key, value->len, value->s);
+	//plog(LOG_INFO, "Got STRING value: %s=[%.*s]", key, value->len, value->s);
 	return 1;
 }
 */
@@ -415,7 +415,7 @@ int redis_get_int(struct redis *redis, const char *instruction, str *callid, con
 
 	freeReplyObject(rpl);
 
-	//syslog(LOG_INFO, "Got INT value: %s=%d", key, *value);
+	//plog(LOG_INFO, "Got INT value: %s=%d", key, *value);
 	return 1;
 }
 
@@ -437,30 +437,30 @@ int redis_get_uint(struct redis *redis, const char *instruction, str *callid, co
 
 	freeReplyObject(rpl);
 
-	//syslog(LOG_INFO, "Got INT value: %s=%d", key, *value);
+	//plog(LOG_INFO, "Got INT value: %s=%d", key, *value);
 	return 1;
 }
 
 static void __async_connect_cb(const redisAsyncContext *c, int status) {
 	if (status != REDIS_OK) {
-		syslog(LOG_ERR, "error connecting to Redis db in async mode\n");
+		plog(LOG_ERR, "error connecting to Redis db in async mode\n");
 		return;
 	}
 
-	syslog(LOG_INFO, "connected to Redis in async mode\n");
+	plog(LOG_INFO, "connected to Redis in async mode\n");
 }
 
 static void __async_disconnect_cb(const redisAsyncContext *c, int status) {
-	syslog(LOG_ERR, "async DB connection was lost\n");
+	plog(LOG_ERR, "async DB connection was lost\n");
 }
 
 static void __async_cmd_cb(redisAsyncContext *ctxt, void *r, void *privdata) {
 	redisReply *rpl = r;
 
 	if (!rpl)
-		syslog(LOG_ERR, "async command error: %s", ctxt->errstr);
+		plog(LOG_ERR, "async command error: %s", ctxt->errstr);
 	else if (rpl->type == REDIS_REPLY_ERROR)
-		syslog(LOG_ERR, "async command error: %.*s", rpl->len, rpl->str);
+		plog(LOG_ERR, "async command error: %.*s", rpl->len, rpl->str);
 
 }
 
@@ -471,7 +471,7 @@ int redis_restore_fingerprint(struct redis *redis, str *fingerprint) {
 		return -1;
 
 	if (!fingerprint->s) {
-		syslog(LOG_INFO, "dtls-fingerprint is empty");
+		plog(LOG_INFO, "dtls-fingerprint is empty");
 		return 0;
 	}
 
@@ -495,7 +495,7 @@ int redis_restore_expires(struct redis *redis, time_t *value) {
 		return -1;
 
 	if (!aux.s) {
-		syslog(LOG_INFO, "expires is empty");
+		plog(LOG_INFO, "expires is empty");
 		return 0;
 	}
 
@@ -522,7 +522,7 @@ int redis_restore_cert(struct redis *redis, X509 **x509) {
 		return -1;
 
 	if (!value.s) {
-		syslog(LOG_INFO, "cert is empty");
+		plog(LOG_INFO, "cert is empty");
 		return 0;
 	}
 
@@ -552,9 +552,9 @@ int redis_insert_cert(struct redis *redis, X509 *x509) {
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
 		if (!rpl)
-			syslog(LOG_ERR, "%s", redis->ctxt->errstr);
+			plog(LOG_ERR, "%s", redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
 			freeReplyObject(rpl);
 		}
 
@@ -578,7 +578,7 @@ int redis_restore_pkey(struct redis *redis, EVP_PKEY **pkey) {
 		return -1;
 
 	if (!value.s || value.len == 0) {
-		syslog(LOG_INFO, "pkey is empty");
+		plog(LOG_INFO, "pkey is empty");
 		return 0;
 	}
 
@@ -590,7 +590,7 @@ int redis_restore_pkey(struct redis *redis, EVP_PKEY **pkey) {
 	if (!pkey) {
 		char buffer[512];
 		ERR_error_string(ERR_get_error(), buffer);
-		syslog(LOG_ERR, "pkey pointer is NULL: %s", buffer);
+		plog(LOG_ERR, "pkey pointer is NULL: %s", buffer);
 		return -1;
 	}
 
@@ -626,9 +626,9 @@ int redis_insert_pkey(struct redis *redis, EVP_PKEY *pkey) {
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
 		if (!rpl)
-			syslog(LOG_ERR, "%s", redis->ctxt->errstr);
+			plog(LOG_ERR, "%s", redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
 			freeReplyObject(rpl);
 		}
 

@@ -11,6 +11,21 @@
 #include <hiredis/adapters/libevent.h>
 
 #include "./rtpengine/daemon/call.h"
+#include "./rtpengine/daemon/log.h"
+
+#define plog(prio,fmt,args...)									\
+	do {											\
+		int loglevel = get_log_level();							\
+		if (LOG_LEVEL_MASK((prio)) > LOG_LEVEL_MASK(loglevel))				\
+			break;									\
+		if ((loglevel & LOG_FLAG_RESTORE) && !((prio) & LOG_FLAG_RESTORE))		\
+			break;									\
+		openlog("rtpengine-redis-plugin", LOG_PID | LOG_NDELAY, _log_facility);		\
+		__ilog(prio, "[%s] " fmt, __FUNCTION__, ##args);				\
+		openlog("rtpengine", LOG_PID | LOG_NDELAY, _log_facility);			\
+	} while (0)
+
+//syslog(prio | _log_facility, "[%s] " fmt, __FUNCTION__, ##__VA_ARGS__);
 
 struct redis {
 	int db;
@@ -23,7 +38,7 @@ struct redis {
 	GThread *eb_thread;
 };
 
-void mod_redis_update(struct call *c, struct redis *r); 
+void mod_redis_update(struct call *c, struct redis *r);
 void mod_redis_delete(struct call *c, struct redis *r);
 void mod_redis_wipe(struct redis *r);
 int mod_redis_restore(struct callmaster *m, struct redis *r);

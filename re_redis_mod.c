@@ -53,6 +53,7 @@ char *__module_version = "redis/9";
 #define STREAM_CONSECUTIVE_PORTS_KEY		20
 #define STREAM_MAX_KEY				21
 
+/* REDIS call key array */
 const char *redis_call_keys[CALL_MAX_KEY] = {
 	"tt",
 	"ft",
@@ -62,6 +63,7 @@ const char *redis_call_keys[CALL_MAX_KEY] = {
 	"created-from",
 };
 
+/* REDIS stream key array */
 const char *redis_stream_keys[STREAM_MAX_KEY] = {
 	"payload-type",
 	"payload-count",
@@ -85,22 +87,6 @@ const char *redis_stream_keys[STREAM_MAX_KEY] = {
 	"rtcp-endpoint",
 	"consecutive_ports",
 };
-
-static const char* redis_get_call_key(unsigned int key) {
-	if (key >= CALL_MAX_KEY) {
-		return NULL;
-	}
-
-	return redis_call_keys[key];
-}
-
-static const char* redis_get_stream_key(unsigned int key) {
-	if (key >= STREAM_MAX_KEY) {
-		return NULL;
-	}
-
-	return redis_stream_keys[key];
-}
 
 DECL_STRUCT_SIZE(call);
 DECL_STRUCT_SIZE(packet_stream);
@@ -154,15 +140,31 @@ extern const int num_crypto_suites;
 static void __print_flags(const char *title, struct stream_params *sp);
 
 static int __insert_stream_params(struct redis *redis, str* callid, int stream_id,
-	struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port); 
+	struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port);
 static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id,
-	struct stream_params *sp, unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port); 
+	struct stream_params *sp, unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port);
 static int __register_callid(struct redis *redis, str* callid);
 static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, str *proxy, struct sdp_ng_flags *flags, enum call_opmode op_mode,
 	unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count);
 static void __fill_flag(struct sdp_ng_flags *flags, struct stream_params *sp);
+
+static const char* redis_get_call_key(unsigned int key) {
+	if (key >= CALL_MAX_KEY) {
+		return NULL;
+	}
+
+	return redis_call_keys[key];
+}
+
+static const char* redis_get_stream_key(unsigned int key) {
+	if (key >= STREAM_MAX_KEY) {
+		return NULL;
+	}
+
+	return redis_stream_keys[key];
+}
 
 void mod_redis_update(struct call *call, struct redis *redis) {
 	struct packet_stream *ps;
@@ -190,12 +192,12 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 
 		if (!set) {
 			if (redis_insert_str_value_async(redis, &call->callid, redis_get_call_key(CALL_TT_KEY), &monologue->tag) < 0) {
-				syslog(LOG_ERR, "couldn't insert ps counter into database\n");
+				plog(LOG_ERR, "couldn't insert ps counter into database\n");
 				return;
 			}
 
 			if (monologue->active_dialogue && redis_insert_str_value_async(redis, &call->callid,  redis_get_call_key(CALL_FT_KEY), &monologue->active_dialogue->tag) < 0) {
-				syslog(LOG_ERR, "couldn't insert ps counter into database\n");
+				plog(LOG_ERR, "couldn't insert ps counter into database\n");
 				return;
 			}
 
@@ -210,7 +212,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 			for (iter = values; iter; iter = iter->next) {
 				pt = iter->data;
 				g_queue_push_tail(&sp.rtp_payload_types, pt);
-				syslog(LOG_INFO, "mod_redis_update - insert payload_type = %d", pt->payload_type);
+				plog(LOG_DEBUG, "insert payload_type = %d", pt->payload_type);
 			}
 			g_list_free(values);
 
@@ -286,25 +288,25 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 
 			char buf[64];
 			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
-			syslog(LOG_INFO, "RTP: %s:%d", buf, sp.rtp_endpoint.port);
+			plog(LOG_DEBUG, "RTP: %s:%d", buf, sp.rtp_endpoint.port);
 			smart_ntop_p(buf, &sp.rtcp_endpoint.ip46, sizeof(buf));
-			syslog(LOG_INFO, "RTCP: %s:%d", buf, sp.rtcp_endpoint.port);
+			plog(LOG_DEBUG, "RTCP: %s:%d", buf, sp.rtcp_endpoint.port);
 		}
 	}
 
 	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_LASTPORT_KEY), call->callmaster->lastport) < 0) {
-		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
+		plog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
 		return;
 	}
 
 	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), sp_counter) < 0) {
-		syslog(LOG_ERR, "couldn't insert streams count into database\n");
+		plog(LOG_ERR, "couldn't insert streams count into database\n");
 		return;
 	}
 
 	// keep call tos in order to fill flags.tos when redis restore
 	if (redis_insert_uint_value_async(redis, &call->callid, redis_get_call_key(CALL_TOS_KEY), call->tos) < 0) {
-		syslog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
+		plog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
 		return;
 	}
 
@@ -312,7 +314,7 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 	proxy.s = call->created_from;
 	proxy.len = strlen(call->created_from);
 	if (redis_insert_str_value_async(redis, &call->callid, redis_get_call_key(CALL_CREATED_FROM_KEY), &proxy) < 0) {
-		syslog(LOG_ERR, "couldn't insert proxy string into database\n");
+		plog(LOG_ERR, "couldn't insert proxy string into database\n");
 		return;
 	}
 
@@ -321,13 +323,11 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 }
 
 void mod_redis_delete(struct call *c, struct redis *redis) {
-	syslog (LOG_INFO, __FUNCTION__);
-
 	if (redis_remove_mp_entry(redis, &c->callid) < 0)
-		syslog(LOG_ERR, "Error removing key from hash table\n");
+		plog(LOG_ERR, "Error removing key from hash table\n");
 
 	if (redis_remove_member(redis, &c->callid) < 0)
-		syslog(LOG_ERR, "Error removing member from list\n");
+		plog(LOG_ERR, "Error removing member from list\n");
 }
 
 int redis_remove_mp_entry(struct redis *redis, str *callid) {
@@ -346,7 +346,6 @@ int redis_remove_mp_entry(struct redis *redis, str *callid) {
 }
 
 void mod_redis_wipe(struct redis *r) {
-	syslog (LOG_INFO, __FUNCTION__);
 }
 
 #ifdef obsolete_dtls
@@ -357,61 +356,61 @@ static int __restore_dtls_params(struct redis *redis, struct dtls_cert *cert) {
 
 	ret = redis_restore_cert(redis, &cert->x509);
 	if (ret < 0) {
-		syslog(LOG_ERR, "error restoring certificate\n");
+		plog(LOG_ERR, "error restoring certificate\n");
 		return -1;
 	}
 	else if (ret == 0 && redis_insert_cert(redis, cert->x509) < 0) {
-		syslog(LOG_ERR, "error inserting certificate\n");
+		plog(LOG_ERR, "error inserting certificate\n");
 		return -1;
 	}
 	else if (ret == 1)
-		syslog(LOG_INFO, "certificate was restored from previous instance\n");
+		plog(LOG_INFO, "certificate was restored from previous instance\n");
 
 	ret = redis_restore_pkey(redis, &cert->pkey);
 	if (ret < 0) {
-		syslog(LOG_ERR, "error restoring pkey\n");
+		plog(LOG_ERR, "error restoring pkey\n");
 		return -1;
 	}
 	else if (ret == 0 && redis_insert_pkey(redis, cert->pkey) < 0) {
-		syslog(LOG_ERR, "error inserting pkey\n");
+		plog(LOG_ERR, "error inserting pkey\n");
 		return -1;
 	}
 	else if (ret == 1)
-		syslog(LOG_INFO, "pkey was restored from previous instance\n");
+		plog(LOG_INFO, "pkey was restored from previous instance\n");
 
 	ret = redis_restore_expires(redis, &cert->expires);
 	if (ret < 0) {
-		syslog(LOG_ERR, "error restoring expires\n");
+		plog(LOG_ERR, "error restoring expires\n");
 		return -1;
 	}
 	else if (ret == 0 && redis_insert_expires(redis, &cert->expires) < 0) {
-		syslog(LOG_ERR, "error inserting expires\n");
+		plog(LOG_ERR, "error inserting expires\n");
 		return -1;
 	}
 	else if (ret == 1)
-		syslog(LOG_INFO, "expires was restored from previous instance\n");
+		plog(LOG_INFO, "expires was restored from previous instance\n");
 
 	cert->fingerprint.hash_func = dtls_find_hash_func(&default_hash_function);
 
 	if (!cert->fingerprint.hash_func) {
-		syslog(LOG_ERR, "error finding hash function\n");
+		plog(LOG_ERR, "error finding hash function\n");
 		return -1;
 	}
 
 	ret = redis_restore_fingerprint(redis, &aux);
 	if (ret < 0) {
-		syslog(LOG_ERR, "error restoring fingerprint\n");
+		plog(LOG_ERR, "error restoring fingerprint\n");
 		return -1;
 	}
 	else if (ret == 0 && redis_insert_fingerprint(redis, cert->fingerprint.digest, sizeof(cert->fingerprint.digest)) < 0) {
-		syslog(LOG_ERR, "error inserting fingerprint\n");
+		plog(LOG_ERR, "error inserting fingerprint\n");
 		return -1;
 	}
 	else if (ret == 1) {
 		memcpy(cert->fingerprint.digest, aux.s, sizeof(cert->fingerprint.digest));
 		g_free(aux.s);
 
-		syslog(LOG_INFO, "fingerprint was restored from previous instance\n");
+		plog(LOG_INFO, "fingerprint was restored from previous instance\n");
 	}
 
 	if (!X509_set_pubkey(cert->x509, cert->pkey))
@@ -532,8 +531,6 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	unsigned int *rtp_bridge_ports;
 	unsigned int *rtcp_bridge_ports;
 
-	syslog(LOG_INFO, __FUNCTION__);
-
 #ifdef obsolete_dtls
 	// get the certificate newly generated
 	if (__restore_dtls_params(redis, dtls_cert()) < 0)
@@ -547,32 +544,32 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	for (i = 0; i < length; i++) {
 		// get call
 		callid = &list[i];
-		syslog(LOG_INFO, "Retrieve call ID [%.*s]", callid->len, callid->s);
+		plog(LOG_INFO, "Retrieve call ID [%.*s]", callid->len, callid->s);
 
 		// get call from tag
 		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_FT_KEY), &ft) < 0)
 			goto next;
-		syslog(LOG_INFO, "Retrieve call from tag [%.*s]", ft.len, ft.s);
+		plog(LOG_INFO, "Retrieve call %s [%.*s]", redis_get_call_key(CALL_FT_KEY), ft.len, ft.s);
 
 		// get call to tag
 		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_TT_KEY), &tt) < 0)
 			goto next;
-		syslog(LOG_INFO, "Retrieve call to tag [%.*s]", tt.len, tt.s);
+		plog(LOG_INFO, "Retrieve call %s [%.*s]", redis_get_call_key(CALL_TT_KEY), tt.len, tt.s);
 
 		// get call tos
 		if (redis_get_uint(redis, "HGET", callid, redis_get_call_key(CALL_TOS_KEY), &tos) < 0)
 			goto next;
-		syslog(LOG_INFO, "Retrieve call TOS [%u]", tos);
+		plog(LOG_INFO, "Retrieve call %s [%u]", redis_get_call_key(CALL_TOS_KEY), tos);
 
 		// get call control proxy
 		if (redis_get_str(redis, "HGET", callid, redis_get_call_key(CALL_CREATED_FROM_KEY), &proxy) < 0)
 			goto next;
-		syslog(LOG_INFO, "Retrieve call control proxy [%.*s]", proxy.len, proxy.s);
+		plog(LOG_INFO, "Retrieve call %s [%.*s]", redis_get_call_key(CALL_CREATED_FROM_KEY), proxy.len, proxy.s);
 
 		// get number of stream params; 2 for audio only, 4 for audio + video
 		if ((redis_get_int(redis, "HGET", callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), &stream_count) < 0) || (stream_count % 2))
 			goto next;
-		syslog(LOG_INFO, "Retrieve call stream_count [%u]", stream_count);
+		plog(LOG_INFO, "Retrieve call %s [%u]", redis_get_call_key(CALL_STREAM_COUNT_KEY), stream_count);
 
 		// alloc stream params and bridgeport vector
 		sp = (struct stream_params *) calloc (stream_count, sizeof(struct stream_params));
@@ -586,10 +583,10 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_ports[stream_iter], &rtcp_bridge_ports[stream_iter]) < 0)
 					goto next;
 
-			syslog(LOG_INFO, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
+			plog(LOG_INFO, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
 				rtp_bridge_ports[stream_iter], rtcp_bridge_ports[stream_iter]);
 #ifdef obsolete_dtls
-			syslog(LOG_INFO, "%d rtp %d rtcp %d fingerprint %p bp %d", stream_iter, sp[stream_iter].rtp_endpoint.port, sp[stream_iter].rtcp_endpoint.port,
+			plog(LOG_INFO, "%d rtp %d rtcp %d fingerprint %p bp %d", stream_iter, sp[stream_iter].rtp_endpoint.port, sp[stream_iter].rtcp_endpoint.port,
 				sp[stream_iter].fingerprint.hash_func, rtp_bridge_ports[stream_iter]);
 			ZERO(sp[stream_iter].fingerprint);
 #endif
@@ -612,13 +609,13 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 
 		// process offer
 		if (__process_call(callid, cm, sp, &ft, NULL, &proxy, flags, OP_OFFER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
-			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			plog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
 
 		// process answer
 		if (__process_call(callid, cm, sp, &ft, &tt, &proxy, flags, OP_ANSWER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
-			syslog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
+			plog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
 			goto next;
 		}
 next:
@@ -660,7 +657,7 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 	struct call_monologue *monologue = NULL;
 
 	if (!(call = call_get_opmode(callid, cm, op_mode))) {
-		syslog(LOG_ERR, "error obtaining call using op_mode=%d\n", op_mode);
+		plog(LOG_ERR, "error obtaining call using op_mode=%d\n", op_mode);
 		goto error;
 	}
 
@@ -674,7 +671,7 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 		case OP_OFFER:
 			// get/create monologue
 			if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
-				syslog(LOG_ERR, "error allocating monologue\n");
+				plog(LOG_ERR, "error allocating monologue\n");
 				goto error;
 			}
 
@@ -691,7 +688,7 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 
 			// call rtpengine main logic with OFFER flags
 			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2 - 1]) < 0) {
-				syslog(LOG_ERR, "error processing monologue\n");
+				plog(LOG_ERR, "error processing monologue\n");
 				goto error;
 			}
 
@@ -704,7 +701,7 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 
 			// get/create monologue
 			if (!(monologue = call_get_mono_dialogue(call, ft, tt, NULL))) {
-				syslog(LOG_ERR, "error allocating monologue\n");
+				plog(LOG_ERR, "error allocating monologue\n");
 				goto error;
 			}
 
@@ -719,14 +716,14 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 
 			// call rtpengine main logic with ANSWER flags
 			if (monologue_offer_answer(monologue, &streams, &flags[stream_count / 2]) < 0) {
-				syslog(LOG_ERR, "error processing monologue\n");
+				plog(LOG_ERR, "error processing monologue\n");
 				goto error;
 			}
 
 			break;
 
 		default:
-			syslog(LOG_ERR, "op_mode %d not found; need either OP_OFFER or OP_ANSWER\n", op_mode);
+			plog(LOG_ERR, "op_mode %d not found; need either OP_OFFER or OP_ANSWER\n", op_mode);
 			break;
 	}
 
@@ -798,7 +795,7 @@ static void __dtls_connection_init(struct packet_stream *ps, struct dtls_cert *c
 	d->active = 1;
 
 error:
-	syslog(LOG_ERR, "error");
+	plog(LOG_ERR, "error");
 	return;
 }
 #endif
@@ -826,9 +823,9 @@ static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str 
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
 		if (!rpl)
-			syslog(LOG_ERR, "%s", redis->ctxt->errstr);
+			plog(LOG_ERR, "%s", redis->ctxt->errstr);
 		else {
-			syslog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
 			freeReplyObject(rpl);
 		}
 
@@ -838,7 +835,7 @@ static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str 
 	}
 
 	if (rpl->elements <= 0) {
-		syslog(LOG_INFO, "array is empty\n");
+		plog(LOG_INFO, "array is empty\n");
 		*length = 0;
 		return 1;
 	}
@@ -849,7 +846,7 @@ static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str 
 	for (j = 0; j < rpl->elements; j++) {
 
 		if (rpl->element[j]->len <= 0) {
-			syslog(LOG_ERROR,"array entry is empty\n");
+			plog(LOG_ERROR,"array entry is empty\n");
 			continue;
 		}
 
@@ -880,19 +877,19 @@ static const char *__crypto_find_name(const struct crypto_suite *ptr) {
 
 static void __print_flags(const char *title, struct stream_params *sp) {
 
-	syslog(LOG_INFO, "====> %s", title);
+	plog(LOG_DEBUG, "====> %s", title);
 
-	syslog(LOG_INFO, "NO_RTCP %d", SP_ISSET(sp, NO_RTCP));
-	syslog(LOG_INFO, "IMPLICIT_RTCP %d", SP_ISSET(sp, IMPLICIT_RTCP));
-	syslog(LOG_INFO, "SEND %d", SP_ISSET(sp, SEND));
-	syslog(LOG_INFO, "RECV %d", SP_ISSET(sp, RECV));
-	syslog(LOG_INFO, "ASYMMETRIC %d", SP_ISSET(sp, ASYMMETRIC));
-	syslog(LOG_INFO, "RTCP_MUX %d", SP_ISSET(sp, RTCP_MUX));
-	syslog(LOG_INFO, "SETUP_ACTIVE %d", SP_ISSET(sp, SETUP_ACTIVE));
-	syslog(LOG_INFO, "SETUP_PASSIVE %d", SP_ISSET(sp, SETUP_PASSIVE));
-	syslog(LOG_INFO, "ICE %d", SP_ISSET(sp, ICE));
-	syslog(LOG_INFO, "STRICT_SOURCE %d", SP_ISSET(sp, STRICT_SOURCE));
-	syslog(LOG_INFO, "MEDIA_HANDOVER %d", SP_ISSET(sp, MEDIA_HANDOVER));
+	plog(LOG_DEBUG, "NO_RTCP %d", SP_ISSET(sp, NO_RTCP));
+	plog(LOG_DEBUG, "IMPLICIT_RTCP %d", SP_ISSET(sp, IMPLICIT_RTCP));
+	plog(LOG_DEBUG, "SEND %d", SP_ISSET(sp, SEND));
+	plog(LOG_DEBUG, "RECV %d", SP_ISSET(sp, RECV));
+	plog(LOG_DEBUG, "ASYMMETRIC %d", SP_ISSET(sp, ASYMMETRIC));
+	plog(LOG_DEBUG, "RTCP_MUX %d", SP_ISSET(sp, RTCP_MUX));
+	plog(LOG_DEBUG, "SETUP_ACTIVE %d", SP_ISSET(sp, SETUP_ACTIVE));
+	plog(LOG_DEBUG, "SETUP_PASSIVE %d", SP_ISSET(sp, SETUP_PASSIVE));
+	plog(LOG_DEBUG, "ICE %d", SP_ISSET(sp, ICE));
+	plog(LOG_DEBUG, "STRICT_SOURCE %d", SP_ISSET(sp, STRICT_SOURCE));
+	plog(LOG_DEBUG, "MEDIA_HANDOVER %d", SP_ISSET(sp, MEDIA_HANDOVER));
 
 }
 
@@ -903,6 +900,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	str aux;
 	struct rtp_payload_type *pt;
 	unsigned int payload_index = 0, payload_type = 0, payload_type_count = 0;
+	char buf[64];
 
 	//const char *crypto_name = NULL;
 	memset(val, 0, sizeof(val));
@@ -912,6 +910,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_PAYLOAD_COUNT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, &payload_type_count) < 0)
 		goto error;
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_PAYLOAD_COUNT_KEY), payload_type_count);
 
 	// get the payload types for the stream param
 	for (payload_index = 0; payload_index < payload_type_count; payload_index++) {
@@ -922,15 +921,15 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		pt = g_slice_alloc0(sizeof(*pt));
 		pt->payload_type = payload_type;
 		g_queue_push_tail(&sp->rtp_payload_types, pt);
+		plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_PAYLOAD_TYPE_KEY), payload_type);
 	}
 
 	// get the flags for the stream param
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FLAGS_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->sp_flags, aux);
-	__print_flags("retrieved flags", sp);
+	__print_flags("stream flags", sp);
 	//PS_CLEAR(sp, HAS_HANDLER);
 	//PS_CLEAR(sp, KERNELIZED);
 
@@ -938,25 +937,24 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTP_BRIDGE_PORT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, rtp_bridge_port) < 0)
 		goto error;
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_RTP_BRIDGE_PORT_KEY), *rtp_bridge_port);
 
 	// get the rtcp bridge port for the stream param
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_BRIDGE_PORT_KEY));
 	if (redis_get_uint(redis, "HGET", callid, key, rtcp_bridge_port) < 0)
 		goto error;
-
-	syslog(LOG_INFO,"__retrieve_stream_params - Retrieved rtp_bridge_port=%u rtcp_bridge_port=%u",*rtp_bridge_port, *rtcp_bridge_port);
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_RTCP_BRIDGE_PORT_KEY), *rtcp_bridge_port);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_INDEX_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->index, aux);
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_INDEX_KEY), sp->index);
 
 	// fingerprint setup for dtls
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_DIGEST_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(sp->fingerprint.digest, aux);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FINGER_NAME_KEY));
@@ -967,7 +965,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		sp->fingerprint.hash_func = dtls_find_hash_func(&aux);
 
 		if (!sp->fingerprint.hash_func) {
-			syslog(LOG_ERR, "couldn't find dtls hash function using [%.*s]", aux.len, aux.s);
+			plog(LOG_ERR, "couldn't find dtls hash function using [%.*s]", aux.len, aux.s);
 			g_free(aux.s);
 			goto error;
 		}
@@ -984,7 +982,7 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		sp->crypto.crypto_suite = crypto_find_suite(&aux);
 
 		if (!sp->crypto.crypto_suite) {
-			syslog(LOG_ERR, "couldn't find crypto suite using [%.*s]", aux.len, aux.s);
+			plog(LOG_ERR, "couldn't find crypto suite using [%.*s]", aux.len, aux.s);
 			g_free(aux.s);
 			goto error;
 		}
@@ -997,10 +995,9 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		goto error;
 
 	if (aux.len > sizeof(sp->crypto.master_key)) {
-		syslog(LOG_ERR, "length is greater than master key max length\n");
+		plog(LOG_ERR, "length is greater than master key max length\n");
 		goto error;
 	}
-
 	COPY_AND_FREE(sp->crypto.master_key, aux);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_SALT_KEY));
@@ -1008,39 +1005,38 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		goto error;
 
 	if (aux.len > sizeof(sp->crypto.master_salt)) {
-		syslog(LOG_ERR, "length is greater than master salt max length\n");
+		plog(LOG_ERR, "length is greater than master salt max length\n");
 		goto error;
 	}
-
 	COPY_AND_FREE(sp->crypto.master_salt, aux);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(sp->crypto.mki, aux);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CRYPTO_MKI_LEN_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->crypto.mki_len, aux);
 
 	if ((sp->crypto.mki_len > 0 && !sp->crypto.mki) ||
 		(sp->crypto.mki_len == 0 && sp->crypto.mki)) {
-		syslog(LOG_ERR, "couldn't retrieve mki\n");
+		plog(LOG_ERR, "couldn't retrieve mki\n");
 		goto error;
 	}
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TYPE_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &sp->type) < 0)
 		goto error;
+	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_TYPE_KEY), sp->type.len, sp->type.s);
 
 	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->direction, aux);
+	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION_KEY), sp->direction[0].len, sp->direction[0].s);
+	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION_KEY), sp->direction[1].len, sp->direction[1].s);
 	//memcpy(&sp->direction, aux.s, aux.len);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FAMILY_KEY));
@@ -1050,36 +1046,36 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_TRANSPORT_KEY));
 	if (redis_get_int(redis, "HGET", callid, key, &aux_int) < 0)
 		goto error;
-
 	sp->protocol = &transport_protocols[aux_int];
+	plog(LOG_DEBUG, "Retrieve stream %s [%s]", redis_get_stream_key(STREAM_TRANSPORT_KEY), sp->protocol->name);
 	//sp->protocol->name = transport_protocols[]
 	//sp->protocol->index;
-
-	syslog(LOG_ERR, "---> %s | %s %s", sp->protocol->name, sp->protocol->srtp ? "y" : "n", sp->protocol->avpf ? "y" : "n");
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_SDES_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->sdes_tag, aux);
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_SDES_KEY), sp->sdes_tag);
 
 	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_RTP_ENDPOINT_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->rtp_endpoint, aux);
+	smart_ntop_p(buf, &sp->rtp_endpoint.ip46, sizeof(buf));
+	plog(LOG_DEBUG, "Retrieve stream %s [%s:%d]", redis_get_stream_key(STREAM_RTP_ENDPOINT_KEY), buf, sp->rtp_endpoint.port);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_RTCP_ENDPOINT_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->rtcp_endpoint, aux);
+	smart_ntop_p(buf, &sp->rtcp_endpoint.ip46, sizeof(buf));
+	plog(LOG_DEBUG, "Retrieve stream %s [%s:%d]", redis_get_stream_key(STREAM_RTCP_ENDPOINT_KEY), buf, sp->rtcp_endpoint.port);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_CONSECUTIVE_PORTS_KEY));
 	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
 		goto error;
-
 	COPY_AND_FREE(&sp->consecutive_ports, aux);
+	plog(LOG_DEBUG, "Retrieve stream %s [%u]", redis_get_stream_key(STREAM_CONSECUTIVE_PORTS_KEY), sp->consecutive_ports);
 
 	return 1;
 error:
