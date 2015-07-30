@@ -682,8 +682,8 @@ static int __process_call(str *callid, struct callmaster *cm, struct stream_para
 			// push the correspondent bridge ports (e.g [sp1_bp, sp3_bp], [sp2_bp, sp4_bp])
 			for (stream_iter = 0; stream_iter < stream_count / 2; stream_iter++) {
 				g_queue_push_tail(&streams, &sp[stream_iter]);
-				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter]);
-				g_queue_push_tail(&call->rtp_bridge_ports, &rtp_bridge_ports[stream_iter + stream_count / 2]);
+				g_queue_push_tail(&call->rtp_bridge_ports, GUINT_TO_POINTER(rtp_bridge_ports[stream_iter]));
+				g_queue_push_tail(&call->rtp_bridge_ports, GUINT_TO_POINTER(rtp_bridge_ports[stream_iter + stream_count / 2]));
 			}
 
 			// call rtpengine main logic with OFFER flags
