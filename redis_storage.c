@@ -90,6 +90,12 @@ static int __redis_insert_bin_value(struct redis *redis, str *callid, const char
 		return redisAsyncCommand(redis->async_ctxt, __async_cmd_cb, NULL,
 				"HSET mp:%s %s %b", str_call_id, key, value, size) == REDIS_OK ? 1 : -1;
 
+        if (redis->ctxt == NULL) {
+                // reconnect on error
+		__redis_connect_sync(redis);
+                return -1;
+        }
+
 	rpl = redisCommand(redis->ctxt, "HSET mp:%s %s %b", str_call_id, key, value, size);
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
@@ -160,6 +166,12 @@ static int __redis_insert_uint_value(struct redis *redis, str *callid, const cha
 }
 
 static int __insert_value(struct redis *redis, const char* cmd, redisReply **rpl) {
+        if (redis->ctxt == NULL) {
+                // reconnect on error
+		__redis_connect_sync(redis);
+                return -1;
+        }
+
 	*rpl = redisCommand(redis->ctxt, cmd);
 
 //	plog(LOG_INFO, "cmd: [%s]\n", cmd);
@@ -196,6 +208,10 @@ static struct redis *__alloc_redis(struct in_addr ip, uint16_t port, int db) {
 }
 
 static struct redis *__redis_connect_async(struct redis *redis) {
+	if (redis == NULL) {
+		return NULL;
+	}
+
 	redis->eb = event_base_new();
 
 	plog(LOG_INFO, "Connecting (ASYNC) to Redis at %s:%d", redis->str_ip, redis->port);
@@ -241,8 +257,10 @@ static struct redis *__redis_connect_sync(struct redis *r) {
 
 	plog(LOG_INFO, "Connecting to Redis at %s:%d", r->str_ip, r->port);
 
-	if (r->ctxt)
+	if (r->ctxt) {
 		redisFree(r->ctxt);
+		r->ctxt = NULL;
+	}
 
 	r->ctxt = redisConnectWithTimeout(r->str_ip, r->port, timeout);
 
@@ -252,6 +270,7 @@ static struct redis *__redis_connect_sync(struct redis *r) {
 		else {
 			plog(LOG_ERR, "Connection error: %s", r->ctxt->errstr);
 			redisFree(r->ctxt);
+			r->ctxt = NULL;
 		}
 
 		return NULL;
@@ -265,6 +284,10 @@ static struct redis *__redis_connect_sync(struct redis *r) {
 
 static int __redis_select_db(redisContext *ctxt, int db) {
 	redisReply *rpl;
+        if (ctxt == NULL) {
+                return -1;
+        }
+
 	rpl = redisCommand(ctxt, "SELECT %d", db);
 
 	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
@@ -285,6 +308,12 @@ int redis_exec_async(struct redis *redis, const char *cmd) {
 }
 
 int redis_exec(struct redis *redis, const char *cmd, redisReply **rpl) {
+	if (redis->ctxt == NULL) {
+		// reconnect on error
+		redis_connect_all(redis);
+		return -1;
+	}
+
 	*rpl = redisCommand(redis->ctxt, cmd);
 
 	if (!(*rpl) || (*rpl)->type == REDIS_REPLY_ERROR) {
@@ -544,6 +573,12 @@ int redis_insert_cert(struct redis *redis, X509 *x509) {
 	BIO *b64;
 	int res;
 
+        if (redis->ctxt == NULL) {
+                // reconnect on error
+		redis_connect_all(redis);
+                return -1;
+        }
+
 	b64 = BIO_new (BIO_s_mem());
 	PEM_write_bio_X509(b64, x509);
 	res = BIO_read(b64, certificate, sizeof(certificate));
@@ -607,6 +642,11 @@ int redis_insert_pkey(struct redis *redis, EVP_PKEY *pkey) {
 	BIO *b64;
 	int res;
 
+        if (redis->ctxt == NULL) {
+                // reconnect on error
+		redis_connect_all(redis);
+                return -1;
+        }
 /*
 	pkeyLen = i2d_PublicKey(pkey, NULL);
 	buffer = (unsigned char *) g_malloc0(pkeyLen + 1);
