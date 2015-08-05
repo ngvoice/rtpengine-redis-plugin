@@ -1,7 +1,7 @@
 IMPORTANT NOTE:
 ======================
 
-**This plugin works for RTPEngine 4.1.x, not for earlier versions - Work in progress**
+**This plugin works for RTPEngine 4.1.x, not for earlier versions**
 
 Installation Guide
 ======================
@@ -13,14 +13,11 @@ Example
 <pre>
 /main-directory/
   |-----rtpengine/
-  |-----plugin/
 </pre>
 
 Clone the repo
 <pre>
-git clone https://github.com/ngvoice/rtpengine-redis-plugin rtpengine-redis-plugin -b 1and1-fmetz
-cd rtpengine-redis-plugin
-git clone https://github.com/1and1/rtpengine -b redis-dev
+git clone --recursive https://github.com/ngvoice/rtpengine-redis-plugin rtpengine-redis-plugin
 </pre>
 
 Dependencies
@@ -32,10 +29,10 @@ Apart from that, this plugin uses the same dependency set that comes with rtpeng
 
 Installation
 ======================
-Go to plugin directory
+Go to checked-out directory
 
 <pre>
-# cd plugin
+# cd rtpengine-redis-plugin
 </pre>
 
 Compile it
@@ -54,7 +51,8 @@ in case the directory is missing, which is the case when installing rtpengine fr
 
 Usage
 ======================
-Use the -r parameter to specify the IP:port of Redis database, and -R to choose the database index to use
+RTPengine comes with a default configuration file (when installing using a debian package, its location is /etc/default/ngcp-rtpengine-daemon). Using that file and RTPengines init-scipt, just uncomment and change the **REDIS** and **REDIS_DB** to your needs. 
+Alternatively, you can use the **-r** and **-R** options respectively to specify the IP:port of the redis server and the redis database, e.g.:
 
 <pre>
 rtpengine --table=0 --ip=192.168.3.101 --listen-ng=127.0.0.1:22222 --pidfile=/var/run/mediaproxy-ng.pid -r 127.0.0.1:6379 -R 0
