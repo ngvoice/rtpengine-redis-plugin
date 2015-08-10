@@ -567,9 +567,21 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		plog(LOG_INFO, "Retrieve call %s [%.*s]", redis_get_call_key(CALL_CREATED_FROM_KEY), proxy.len, proxy.s);
 
 		// get number of stream params; 2 for audio only, 4 for audio + video
-		if ((redis_get_int(redis, "HGET", callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), &stream_count) < 0) || (stream_count % 2))
+		if ((redis_get_int(redis, "HGET", callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), &stream_count) < 0))
 			goto next;
 		plog(LOG_INFO, "Retrieve call %s [%u]", redis_get_call_key(CALL_STREAM_COUNT_KEY), stream_count);
+
+		// skip if no streams found for the call
+		if (stream_count == 0) {
+			plog(LOG_INFO, "No streams found for call ID [%.*s]", callid->len, callid->s); 
+			goto next;
+		}
+
+		// skip if odd number of streams found for the call
+		if (stream_count % 2) {
+			plog(LOG_INFO, "Odd number of streams found for call ID [%.*s]", callid->len, callid->s); 
+			goto next;
+		}
 
 		// alloc stream params and bridgeport vector
 		sp = (struct stream_params *) calloc (stream_count, sizeof(struct stream_params));
@@ -581,7 +593,7 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		// due to insertion order, the OFFER stream params are retrieved first and the ANSWER last
 		for (stream_iter = 0; stream_iter < stream_count; stream_iter++) {
 			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_ports[stream_iter], &rtcp_bridge_ports[stream_iter]) < 0)
-					goto next;
+					goto next_free;
 
 			plog(LOG_INFO, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
 				rtp_bridge_ports[stream_iter], rtcp_bridge_ports[stream_iter]);
@@ -610,23 +622,24 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		// process offer
 		if (__process_call(callid, cm, sp, &ft, NULL, &proxy, flags, OP_OFFER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
 			plog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-			goto next;
+			goto next_free;
 		}
 
 		// process answer
 		if (__process_call(callid, cm, sp, &ft, &tt, &proxy, flags, OP_ANSWER, rtp_bridge_ports, rtcp_bridge_ports, stream_count) < 0) {
 			plog(LOG_ERR, "error processing call [%.*s]\n", callid->len, callid->s);
-			goto next;
+			goto next_free;
 		}
-next:
+next_free:
 //		if (callid->s)
 //			g_free(callid->s);
-		;
 		// TODO: don't like this alloc and free; maybe in the future we make static like sp[8] => 4 media per call
 		free(sp);
 		free(flags);
 		free(rtp_bridge_ports);
 		free(rtcp_bridge_ports);
+next:
+		;
 	}
 	//	if (list)
 	//		g_free(list);
