@@ -50,8 +50,8 @@ int redis_get_int(struct redis *redis, const char *instruction, str *callid, con
 int redis_get_uint(struct redis *redis, const char *instruction, str *callid, const char *key, unsigned int *value);
 int redis_get_str(struct redis *redis, const char *instruction, str *callid, const char *key, str *value);
 //
-int redis_remove_mp_entry(struct redis *redis, str *callid);
-int redis_remove_member(struct redis *redis, str *callid);
+int redis_remove_mp_entry(struct redis *redis, struct call *call);
+int redis_remove_member(struct redis *redis, struct call *call);
 
 int redis_insert_cert(struct redis *redis, X509 *x509);
 int redis_restore_cert(struct redis *redis, X509 **x509);

@@ -332,14 +332,23 @@ int redis_exec(struct redis *redis, const char *cmd, redisReply **rpl) {
 	return 1;
 }
 
-int redis_remove_member(struct redis *redis, str *callid) {
+int redis_remove_member(struct redis *redis, struct call *call) {
 	redisReply *rpl = NULL;
-	char cmd_buffer[1024];
+        char cmd_buff[CMD_BUFFER_SIZE];
+        char addr_buff[64];
+        struct call_monologue *monologue = call->monologues->data;
+        struct call_media *media = monologue->medias.head->data;
+        struct interface_address *ifa = (struct interface_address *)media->local_address;
 	int ret;
 
-	snprintf(cmd_buffer, sizeof(cmd_buffer), "SREM mp:calls %.*s",callid->len, callid->s);
+        smart_ntop_p(addr_buff, &ifa->addr, sizeof(addr_buff));
 
-	ret = redis_exec(redis, cmd_buffer, &rpl);
+        snprintf(cmd_buff, sizeof(cmd_buff), "SREM %.*s:%s %.*s",
+                ifa->interface_name.len, ifa->interface_name.s,
+                addr_buff,
+                call->callid.len, call->callid.s);
+
+	ret = redis_exec(redis, cmd_buff, &rpl);
 
 	if (ret > 0)
 		freeReplyObject(rpl);

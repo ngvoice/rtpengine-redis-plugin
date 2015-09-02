@@ -44,14 +44,15 @@ char *__module_version = "redis/9";
 #define STREAM_CRYPTO_MKI_KEY			11
 #define STREAM_CRYPTO_MKI_LEN_KEY		12
 #define STREAM_TYPE_KEY				13
-#define STREAM_DIRECTION_KEY			14
-#define STREAM_FAMILY_KEY			15
-#define STREAM_TRANSPORT_KEY			16
-#define STREAM_SDES_KEY				17
-#define STREAM_RTP_ENDPOINT_KEY			18
-#define STREAM_RTCP_ENDPOINT_KEY		19
-#define STREAM_CONSECUTIVE_PORTS_KEY		20
-#define STREAM_MAX_KEY				21
+#define STREAM_DIRECTION0_KEY			14
+#define STREAM_DIRECTION1_KEY			15
+#define STREAM_FAMILY_KEY			16
+#define STREAM_TRANSPORT_KEY			17
+#define STREAM_SDES_KEY				18
+#define STREAM_RTP_ENDPOINT_KEY			19
+#define STREAM_RTCP_ENDPOINT_KEY		20
+#define STREAM_CONSECUTIVE_PORTS_KEY		21
+#define STREAM_MAX_KEY				22
 
 /* REDIS call key array */
 const char *redis_call_keys[CALL_MAX_KEY] = {
@@ -79,7 +80,8 @@ const char *redis_stream_keys[STREAM_MAX_KEY] = {
 	"crypto-mki",
 	"crypto-mki-len",
 	"type",
-	"stream_direction",
+	"direction0",
+	"direction1",
 	"desired_family",
 	"transport-index",
 	"sdes-tag",
@@ -143,8 +145,8 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
 	struct stream_params *sp, unsigned int rtp_bridge_port, unsigned int rtcp_bridge_port);
 static int __retrieve_stream_params(struct redis *redis, str* callid, int stream_id,
 	struct stream_params *sp, unsigned int *rtp_bridge_port, unsigned int *rtcp_bridge_port);
-static int __register_callid(struct redis *redis, str* callid);
-static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length);
+static int __register_callid(struct redis *redis, struct call *call);
+static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str ***list, int **length);
 static const char *__crypto_find_name(const struct crypto_suite *ptr);
 static int __process_call(str *callid, struct callmaster *cm, struct stream_params *sp, str *ft, str *tt, str *proxy, struct sdp_ng_flags *flags, enum call_opmode op_mode,
 	unsigned int *rtp_bridge_ports, unsigned int *rtcp_bridge_ports, unsigned int stream_count);
@@ -168,11 +170,13 @@ static const char* redis_get_stream_key(unsigned int key) {
 
 void mod_redis_update(struct call *call, struct redis *redis) {
 	struct packet_stream *ps;
-	struct call_media *m;
 	GSList *monologue_iter;
-	GList *ml_media_iter;
 	GList *ps_iter;
-	struct call_monologue *monologue;
+	GList *ml_media_iter, *ml_other_media_iter;
+	struct call_monologue *monologue, *other_monologue;
+	struct call_media *media, *other_media;
+	struct interface_address *ifa, *other_ifa;
+	int media_cnt = 0, other_media_cnt = 0;
 	int sp_counter = 0;
 	struct sdp_ng_flags flags;
 	struct stream_params sp;
@@ -180,15 +184,16 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 	unsigned int rtp_bridge_port = 0, rtcp_bridge_port = 0;
 	struct rtp_payload_type *pt;
 	GList *values, *iter;
-	str proxy = {0,0};
+	str proxy = {0, 0};
 
 	memset(&flags, 0, sizeof(flags));
 	memset(&sp, 0, sizeof(sp));
 
-	__register_callid(redis, &call->callid);
+	__register_callid(redis, call);
 
 	for (monologue_iter = call->monologues; monologue_iter; monologue_iter = monologue_iter->next) {
 		monologue = monologue_iter->data;
+		other_monologue = monologue->active_dialogue;
 
 		if (!set) {
 			if (redis_insert_str_value_async(redis, &call->callid, redis_get_call_key(CALL_TT_KEY), &monologue->tag) < 0) {
@@ -204,11 +209,13 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 			set = 1;
 		}
 
+		media_cnt = 0;
 		for (ml_media_iter = monologue->medias.head; ml_media_iter; ml_media_iter = ml_media_iter->next) {
-			m = ml_media_iter->data;
+			media = ml_media_iter->data;
+			ifa = (struct interface_address *)media->local_address;
 
 			// push payload types in temporary sp structure which will be written into redis database
-			values = g_hash_table_get_values(m->rtp_payload_types);
+			values = g_hash_table_get_values(media->rtp_payload_types);
 			for (iter = values; iter; iter = iter->next) {
 				pt = iter->data;
 				g_queue_push_tail(&sp.rtp_payload_types, pt);
@@ -216,50 +223,70 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 			}
 			g_list_free(values);
 
-			sp.index = m->index;
-			sp.protocol = m->protocol;
+			sp.index = media->index;
+			sp.protocol = media->protocol;
 
-			if (MEDIA_ISSET(m, RTCP_MUX))
+			if (MEDIA_ISSET(media, RTCP_MUX))
 				SP_SET((&sp), RTCP_MUX);
 
-			sp.crypto = m->sdes_in.params;
-			crypto_params_copy(&sp.crypto, &m->sdes_in.params, (flags.opmode == OP_OFFER) ? 1 : 0);
-			sp.sdes_tag = m->sdes_in.tag;
+			sp.crypto = media->sdes_in.params;
+			crypto_params_copy(&sp.crypto, &media->sdes_in.params, (flags.opmode == OP_OFFER) ? 1 : 0);
+			sp.sdes_tag = media->sdes_in.tag;
 
-			if (MEDIA_ISSET(m, ASYMMETRIC)) {
+			if (MEDIA_ISSET(media, ASYMMETRIC)) {
 				SP_SET((&sp), ASYMMETRIC);
 				flags.asymmetric = 1;
 			}
 
-			if (MEDIA_ISSET(m, SEND))
+			if (MEDIA_ISSET(media, SEND))
 				SP_SET((&sp), SEND);
 
-			if (MEDIA_ISSET(m, RECV))
+			if (MEDIA_ISSET(media, RECV))
 				SP_SET((&sp), RECV);
 
-			if (MEDIA_ISSET(m, SETUP_ACTIVE))
+			if (MEDIA_ISSET(media, SETUP_ACTIVE))
 				SP_SET((&sp), SETUP_ACTIVE);
 
-			if (MEDIA_ISSET(m, SETUP_PASSIVE))
+			if (MEDIA_ISSET(media, SETUP_PASSIVE))
 				SP_SET((&sp), SETUP_PASSIVE);
 
-			if (MEDIA_ISSET(m, ICE))
+			if (MEDIA_ISSET(media, ICE))
 				SP_SET((&sp), ICE);
 
-			sp.fingerprint = m->fingerprint;
-			sp.desired_family = m->desired_family;
+			sp.fingerprint = media->fingerprint;
+			sp.desired_family = media->desired_family;
 			// FIXME
 			sp.consecutive_ports = 1;
 
 //			SP_SET((&sp), IMPLICIT_RTCP);
 
-			call_str_cpy(call, &sp.type, &m->type);
+			call_str_cpy(call, &sp.type, &media->type);
+
+			// match other_media for the given media in order to get the right direction
+			other_media_cnt = 0;
+			for (ml_other_media_iter = other_monologue->medias.head; ml_other_media_iter; ml_other_media_iter = ml_other_media_iter->next) {
+				if (other_media_cnt == media_cnt) {
+					break;
+				}
+				other_media_cnt++;
+			}
+                        other_media = ml_other_media_iter->data;
+                        other_ifa = (struct interface_address *)other_media->local_address;
+
+			// now we can complete the right direction for sp
+                        sp.direction[0].s = g_malloc0(ifa->interface_name.len);
+                        sp.direction[0].len = ifa->interface_name.len;
+			memcpy(sp.direction[0].s, ifa->interface_name.s, ifa->interface_name.len);
+                        sp.direction[1].s = g_malloc0(other_ifa->interface_name.len);
+                        sp.direction[1].len = other_ifa->interface_name.len;
+			memcpy(sp.direction[1].s, other_ifa->interface_name.s, other_ifa->interface_name.len);
+
 			memcpy(flags.direction, sp.direction, sizeof(sp.direction));
-			flags.transport_protocol = m->protocol;
+			flags.transport_protocol = media->protocol;
 
 			SP_SET((&sp), NO_RTCP);
 
-			for (ps_iter = m->streams.head; ps_iter; ps_iter = ps_iter->next) {
+			for (ps_iter = media->streams.head; ps_iter; ps_iter = ps_iter->next) {
 				ps = ps_iter->data;
 
 				if (PS_ISSET(ps, RTCP)) {
@@ -286,19 +313,28 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 			// this is the behaviour due to rtpengine's call_offer_answer_ng()
 			__insert_stream_params(redis, &call->callid, sp_counter++, &sp, rtp_bridge_port, rtcp_bridge_port);
 
-			char buf[64];
-			smart_ntop_p(buf, &sp.rtp_endpoint.ip46, sizeof(buf));
-			plog(LOG_DEBUG, "RTP: %s:%d", buf, sp.rtp_endpoint.port);
-			smart_ntop_p(buf, &sp.rtcp_endpoint.ip46, sizeof(buf));
-			plog(LOG_DEBUG, "RTCP: %s:%d", buf, sp.rtcp_endpoint.port);
+			// debugs
+			char addr_buff[64];
+			smart_ntop_p(addr_buff, &sp.rtp_endpoint.ip46, sizeof(addr_buff));
+			plog(LOG_INFO, "RTP: %s:%d", addr_buff, sp.rtp_endpoint.port);
+			smart_ntop_p(addr_buff, &sp.rtcp_endpoint.ip46, sizeof(addr_buff));
+			plog(LOG_INFO, "RTCP: %s:%d", addr_buff, sp.rtcp_endpoint.port);
+			smart_ntop_p(addr_buff, &ifa->addr, sizeof(addr_buff));
+			plog(LOG_INFO, "Media interface name: \"%.*s\" addr: %s:%d",
+				ifa->interface_name.len, ifa->interface_name.s, addr_buff, sp.rtcp_endpoint.port);
+
+			// count the medias for this monologue
+			media_cnt ++;
 		}
 	}
 
+	// not used anymore - bridgeporrts are used instead
 	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_LASTPORT_KEY), call->callmaster->lastport) < 0) {
 		plog(LOG_ERR, "couldn't insert callmaster lastport into database\n");
 		return;
 	}
 
+	// keep the number of stream params
 	if (redis_insert_int_value_async(redis, &call->callid, redis_get_call_key(CALL_STREAM_COUNT_KEY), sp_counter) < 0) {
 		plog(LOG_ERR, "couldn't insert streams count into database\n");
 		return;
@@ -323,19 +359,19 @@ void mod_redis_update(struct call *call, struct redis *redis) {
 }
 
 void mod_redis_delete(struct call *c, struct redis *redis) {
-	if (redis_remove_mp_entry(redis, &c->callid) < 0)
+	if (redis_remove_mp_entry(redis, c) < 0)
 		plog(LOG_ERR, "Error removing key from hash table\n");
 
-	if (redis_remove_member(redis, &c->callid) < 0)
+	if (redis_remove_member(redis, c) < 0)
 		plog(LOG_ERR, "Error removing member from list\n");
 }
 
-int redis_remove_mp_entry(struct redis *redis, str *callid) {
+int redis_remove_mp_entry(struct redis *redis, struct call *call) {
 	redisReply *rpl = NULL;
 	char cmd_buffer[1024];
 	int ret;
 
-	snprintf(cmd_buffer, sizeof(cmd_buffer), "DEL mp:%.*s",callid->len, callid->s);
+	snprintf(cmd_buffer, sizeof(cmd_buffer), "DEL mp:%.*s", call->callid.len, call->callid.s);
 
 	ret = redis_exec(redis, cmd_buffer, &rpl);
 
@@ -516,13 +552,13 @@ static void swap_bridgeports(unsigned int *rtp_bridge_ports, unsigned int len) {
 }
 
 int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
-	str *list = NULL;
+	str **list = NULL;
 	str ft = {0,0};
 	str tt = {0,0};
 	str proxy = {0,0};
 	str *callid = NULL;
-	int length = 0, stream_count = 0, stream_iter = 0;
-	int i;
+	int *length = NULL, stream_count = 0, stream_iter = 0;
+	int i, j;
 	unsigned int tos = 0;
 
 	// useful arrays
@@ -541,9 +577,11 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	if (__retrieve_call_list(redis, cm, &list, &length) < 0)
 		return -1;
 
-	for (i = 0; i < length; i++) {
+	// get stream details binded on each interface
+	for (i = 0; i < g_queue_get_length(cm->conf.interfaces); i++) {
+	for (j = 0; j < length[i]; j++) {
 		// get call
-		callid = &list[i];
+		callid = &list[i][j];
 		plog(LOG_INFO, "Retrieve call ID [%.*s]", callid->len, callid->s);
 
 		// get call from tag
@@ -640,6 +678,7 @@ next_free:
 		free(rtcp_bridge_ports);
 next:
 		;
+	}
 	}
 	//	if (list)
 	//		g_free(list);
@@ -827,49 +866,75 @@ static void __streams_free(GQueue *q) {
 
 #define VAL_SIZE(_x_) (char *)&(_x_), sizeof((_x_))
 
-static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str **list, int *length) {
+static int __retrieve_call_list(struct redis *redis, struct callmaster *cm, str ***list, int **length) {
+	GList *l;
 	redisReply *rpl = NULL;
-	int j;
+	int i,j;
+	struct interface_address *ifa;
+	char cmd_buff[CMD_BUFFER_SIZE];
+	char addr_buff[64];
 
-	if (redis_exec(redis, "SMEMBERS mp:calls", &rpl) < 0)
+	if (g_queue_get_length(cm->conf.interfaces) > 0) {
+		*list = g_malloc0(sizeof(str) * g_queue_get_length(cm->conf.interfaces));
+		*length = g_malloc0(sizeof(int) * g_queue_get_length(cm->conf.interfaces));
+	} else {
+		plog(LOG_ERR, "Found empty rtpengine interfaces list");
 		return -1;
+	}
 
-	if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
-		if (!rpl)
-			plog(LOG_ERR, "%s", redis->ctxt->errstr);
-		else {
-			plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
-			freeReplyObject(rpl);
+	/* build primary lists first */
+	for (l = cm->conf.interfaces->head, i = 0; l; l = l->next, i++) {
+		ifa = l->data;
+		smart_ntop_p(addr_buff, &ifa->addr, sizeof(addr_buff));
+
+		snprintf(cmd_buff, sizeof(cmd_buff), "SMEMBERS %.*s:%s",
+			ifa->interface_name.len, ifa->interface_name.s,
+			addr_buff);
+
+		if (redis_exec(redis, cmd_buff, &rpl) < 0) {
+			plog(LOG_ERR, "Failed command %s for set %.*s", cmd_buff,
+				ifa->interface_name.len, ifa->interface_name.s);
+			return -1;
 		}
 
-		// reconnect on error
-		redis_connect_all(redis);
-		return -1;
-	}
+		if (!rpl || rpl->type == REDIS_REPLY_ERROR) {
+			if (!rpl)
+				plog(LOG_ERR, "%s", redis->ctxt->errstr);
+			else {
+				plog(LOG_ERR, "%.*s", rpl->len, rpl->str);
+				freeReplyObject(rpl);
+			}
 
-	if (rpl->elements <= 0) {
-		plog(LOG_INFO, "array is empty\n");
-		*length = 0;
-		return 1;
-	}
-
-	*list = g_malloc0(sizeof(str) * rpl->elements);
-	*length = rpl->elements;
-
-	for (j = 0; j < rpl->elements; j++) {
-
-		if (rpl->element[j]->len <= 0) {
-			plog(LOG_ERROR,"array entry is empty\n");
+			// reconnect on error
+			redis_connect_all(redis);
 			continue;
 		}
 
-		(*list)[j].s = g_malloc0(rpl->element[j]->len);
-		(*list)[j].len = rpl->element[j]->len;
+		if (rpl->elements <= 0) {
+			plog(LOG_INFO, "Found empty set: %.*s\n", ifa->interface_name.len, ifa->interface_name.s);
+			(*length)[i] = 0;
+			continue;
+		} else {
+			plog(LOG_INFO, "Found elements in set: %.*s\n", ifa->interface_name.len, ifa->interface_name.s);
+		}
 
-		memcpy((*list)[j].s, rpl->element[j]->str, (*list)[j].len);
+		(*list)[i] = g_malloc0(sizeof(str) * rpl->elements);
+		(*length)[i] = rpl->elements;
+
+		for (j = 0; j < rpl->elements; j++) {
+			if (rpl->element[j]->len <= 0) {
+				plog(LOG_INFO, "Found empty element in set: %.*s\n", ifa->interface_name.len, ifa->interface_name.s);
+				continue;
+			}
+
+			(*list)[i][j].s = g_malloc0(rpl->element[j]->len);
+			(*list)[i][j].len = rpl->element[j]->len;
+
+			memcpy((*list)[i][j].s, rpl->element[j]->str, (*list)[i][j].len);
+		}
+
+		freeReplyObject(rpl);
 	}
-
-	freeReplyObject(rpl);
 
 	return 1;
 }
@@ -1044,13 +1109,15 @@ static int __retrieve_stream_params(struct redis *redis, str* callid, int stream
 		goto error;
 	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_TYPE_KEY), sp->type.len, sp->type.s);
 
-	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION_KEY));
-	if (redis_get_str(redis, "HGET", callid, key, &aux) < 0)
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION0_KEY));
+	if (redis_get_str(redis, "HGET", callid, key, &sp->direction[0]) < 0)
 		goto error;
-	COPY_AND_FREE(&sp->direction, aux);
-	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION_KEY), sp->direction[0].len, sp->direction[0].s);
-	plog(LOG_DEBUG, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION_KEY), sp->direction[1].len, sp->direction[1].s);
-	//memcpy(&sp->direction, aux.s, aux.len);
+	plog(LOG_INFO, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION1_KEY), sp->direction[1].len, sp->direction[1].s);
+
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION1_KEY));
+	if (redis_get_str(redis, "HGET", callid, key, &sp->direction[1]) < 0)
+		goto error;
+	plog(LOG_INFO, "Retrieve stream %s [%.*s]", redis_get_stream_key(STREAM_DIRECTION0_KEY), sp->direction[0].len, sp->direction[0].s);
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FAMILY_KEY));
 	if (redis_get_int(redis, "HGET", callid, key, &sp->desired_family) < 0)
@@ -1166,8 +1233,12 @@ static int __insert_stream_params(struct redis *redis, str* callid, int stream_i
 	if (redis_insert_str_value_async(redis, callid, key, &sp->type) < 0)
 		goto error;
 
-	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION_KEY));
-	if (redis_insert_bin_value_async(redis, callid, key, VAL_SIZE(sp->direction)) < 0)
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION0_KEY));
+	if (redis_insert_str_value_async(redis, callid, key, &sp->direction[0]) < 0)
+		goto error;
+
+	snprintf(key, sizeof(key), "%d:%s",  stream_id, redis_get_stream_key(STREAM_DIRECTION1_KEY));
+	if (redis_insert_str_value_async(redis, callid, key, &sp->direction[1]) < 0)
 		goto error;
 
 	snprintf(key, sizeof(key), "%d:%s", stream_id, redis_get_stream_key(STREAM_FAMILY_KEY));
@@ -1199,12 +1270,22 @@ error:
 	return -1;
 }
 
-static int __register_callid(struct redis *redis, str* callid) {
+static int __register_callid(struct redis *redis, struct call *call) {
 	redisReply *rpl;
-	char buff[CMD_BUFFER_SIZE];
-	snprintf(buff, sizeof(buff), "SADD mp:calls %.*s", callid->len, callid->s);
+	char cmd_buff[CMD_BUFFER_SIZE];
+	char addr_buff[64];
+        struct call_monologue *monologue = call->monologues->data;
+        struct call_media *media = monologue->medias.head->data;
+	struct interface_address *ifa = (struct interface_address *)media->local_address;
 
-	if (redis_exec(redis, buff, &rpl) > 0)
+	smart_ntop_p(addr_buff, &ifa->addr, sizeof(addr_buff));
+
+	snprintf(cmd_buff, sizeof(cmd_buff), "SADD %.*s:%s %.*s",
+		ifa->interface_name.len, ifa->interface_name.s,
+		addr_buff,
+		call->callid.len, call->callid.s);
+
+	if (redis_exec(redis, cmd_buff, &rpl) > 0)
 		freeReplyObject(rpl);
 
 	return 1;
