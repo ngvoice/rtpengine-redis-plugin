@@ -168,6 +168,18 @@ static const char* redis_get_stream_key(unsigned int key) {
 	return redis_stream_keys[key];
 }
 
+double time_mili_diff(struct timeval x , struct timeval y)
+{
+    double x_ms , y_ms , diff;
+     
+    x_ms = (double)x.tv_sec * 1000 + (double)x.tv_usec / 1000;
+    y_ms = (double)y.tv_sec * 1000 + (double)y.tv_usec / 1000;
+     
+    diff = (double)y_ms - (double)x_ms;
+     
+    return diff;
+}
+
 void mod_redis_update(struct call *call, struct redis *redis) {
 	struct packet_stream *ps;
 	GSList *monologue_iter;
@@ -567,6 +579,14 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	unsigned int *rtp_bridge_ports;
 	unsigned int *rtcp_bridge_ports;
 
+	struct timeval total_start, total_end;
+	struct timeval redis_start, redis_end;
+	double total_diff = 0, redis_diff = 0;
+
+	// start redis and total timers
+	gettimeofday(&total_start, NULL);
+	gettimeofday(&redis_start, NULL);
+
 #ifdef obsolete_dtls
 	// get the certificate newly generated
 	if (__restore_dtls_params(redis, dtls_cert()) < 0)
@@ -577,9 +597,16 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 	if (__retrieve_call_list(redis, cm, &list, &length) < 0)
 		return -1;
 
+	// stop redis timer
+	gettimeofday(&redis_end, NULL);
+	redis_diff += time_mili_diff(redis_start, redis_end);
+
 	// get stream details binded on each interface
 	for (i = 0; i < g_queue_get_length(cm->conf.interfaces); i++) {
 	for (j = 0; j < length[i]; j++) {
+		// start redis timer
+		gettimeofday(&redis_start, NULL);
+
 		// get call
 		callid = &list[i][j];
 		plog(LOG_INFO, "Retrieve call ID [%.*s]", callid->len, callid->s);
@@ -621,6 +648,10 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 			goto next;
 		}
 
+		// stop redis timer
+		gettimeofday(&redis_end, NULL);
+		redis_diff += time_mili_diff(redis_start, redis_end);
+
 		// alloc stream params and bridgeport vector
 		sp = (struct stream_params *) calloc (stream_count, sizeof(struct stream_params));
 		flags = (struct sdp_ng_flags *) calloc (stream_count, sizeof(struct sdp_ng_flags));
@@ -630,8 +661,19 @@ int mod_redis_restore(struct callmaster *cm, struct redis *redis) {
 		// retrieve call stream params and r(c)tp bridgeports
 		// due to insertion order, the OFFER stream params are retrieved first and the ANSWER last
 		for (stream_iter = 0; stream_iter < stream_count; stream_iter++) {
-			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_ports[stream_iter], &rtcp_bridge_ports[stream_iter]) < 0)
-					goto next_free;
+			// start redis timer
+			gettimeofday(&redis_start, NULL);
+
+			if (__retrieve_stream_params(redis, callid, stream_iter, &sp[stream_iter], &rtp_bridge_ports[stream_iter], &rtcp_bridge_ports[stream_iter]) < 0) {
+				// stop redis timer
+				gettimeofday(&redis_end, NULL);
+				redis_diff += time_mili_diff(redis_start, redis_end);
+				goto next_free;
+			}
+
+			// stop redis timer
+			gettimeofday(&redis_end, NULL);
+			redis_diff += time_mili_diff(redis_start, redis_end);
 
 			plog(LOG_INFO, "Retrieve rtp bridge port [%u], rtcp bridge port [%u]",
 				rtp_bridge_ports[stream_iter], rtcp_bridge_ports[stream_iter]);
@@ -680,6 +722,11 @@ next:
 		;
 	}
 	}
+
+	gettimeofday(&total_end, NULL);
+	total_diff += time_mili_diff(total_start, total_end);
+
+	plog(LOG_INFO, "Total restore time = %.0lf ms; Redis restore time = %.0lf ms", total_diff, redis_diff);
 	//	if (list)
 	//		g_free(list);
 	return 0;
